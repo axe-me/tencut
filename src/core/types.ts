@@ -48,9 +48,14 @@ export interface VideoFeatures {
   frameCount: number
   /** Fraction of ROI pixels with significant frame-to-frame change, per frame. */
   motion: number[]
-  /** Ball-like candidates (moving, ball-colored, small blobs), flattened: frame, x, y, area. */
+  /**
+   * Ball-like candidates (moving, ball-coloured, small blobs), flattened as CAND_STRIDE values each:
+   * frame, x, y, area, clutter (share of moving pixels around the blob, 0..1).
+   */
   candidates: number[]
 }
+
+export const CAND_STRIDE = 5
 
 export interface AudioFeatures {
   /** Hop between onset-envelope samples, in seconds. */
@@ -69,7 +74,36 @@ export interface BallTrack {
   speed: number
   /** Number of horizontal direction reversals (≈ hits/bounces seen from the side). */
   reversals: number
+  /** Median share of moving pixels around the track's candidates (0 = isolated ball, high = on a player). */
+  clutter?: number
   points: [number, number, number][] // frame, x, y
+}
+
+/** Raw player keypoints from the pose model (see players.ts for layout), compactly encoded. */
+export interface PlayerPoses {
+  /** Pose sampled every `every` analysis frames. */
+  every: number
+  /** Base64 of Int16Array records: frameHi, frameLo, trackId, then 17×(x·2, y·2, score·1000) in analysis pixels. */
+  data: string
+  count: number
+}
+
+export interface Swing {
+  t: number
+  /** Which half of the court the hitter is on. */
+  side: 'near' | 'far'
+  /** Arm above the head: serve or smash. */
+  overhead: boolean
+  /** Peak wrist speed in torso-lengths per second. */
+  speed: number
+}
+
+export interface PoseEvents {
+  swings: Swing[]
+  /** Times (s) when a player on court is bent over (typically picking up balls). */
+  pickups: number[]
+  /** Fraction of pose samples with at least one player detected on court. */
+  coverage: number
 }
 
 export interface AnalysisResult {
@@ -79,6 +113,8 @@ export interface AnalysisResult {
   video: VideoFeatures
   audio: AudioFeatures | null
   tracks: BallTrack[]
+  players?: PlayerPoses
+  poseEvents?: PoseEvents
   analyzedAt: string
   elapsedSec: number
 }
@@ -91,6 +127,8 @@ export interface Segment {
   score: number
   kept: boolean
   manual?: boolean
+  /** 'serve' = a serve (often a fault) with no rally after it. */
+  kind?: 'rally' | 'serve'
 }
 
 export interface SegmentParams {

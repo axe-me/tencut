@@ -109,13 +109,25 @@ test('tracker links a fast moving candidate and rejects a slow one', () => {
   const a = fakeAnalysis([])
   const c: number[] = []
   for (let f = 0; f < 12; f++) {
-    c.push(100 + f, 200 + f * 25, 300 + f * 2, 6) // fast: ball
-    c.push(100 + f, 900 + f * 1, 500, 8) // slow: clothing
+    c.push(100 + f, 200 + f * 25, 300 + f * 2, 6, 0.05) // fast: ball
+    c.push(100 + f, 900 + f * 1, 500, 8, 0.6) // slow, on a moving body: clothing
+    c.push(100 + f, 300 + f * 5, 150 + f * 1, 5, 0.03) // slow but isolated and travelling: ball flying towards the camera
   }
   a.video.candidates = c
   const tracks = trackBalls(a.video)
-  assert.equal(tracks.length, 1)
-  assert.ok(tracks[0].points[0][1] < 250)
+  assert.equal(tracks.length, 2)
+  assert.ok(tracks.every((t) => t.points[0][1] < 400), 'clothing track rejected')
+})
+
+test('serve: toss followed by a loud hit becomes a serve clip even without a rally', () => {
+  const toss: BallTrack = { start: 600, end: 612, speed: 12, reversals: 0, points: [] }
+  for (let i = 0; i <= 12; i++) toss.points.push([600 + i, 400 + (i % 2), 500 - 18 * Math.min(i, 10)])
+  const a = fakeAnalysis([toss])
+  a.audio = { hop: 0.01, onset: [], hits: [{ t: 41.0, s: 40 }] }
+  const segs = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  assert.equal(segs.length, 1)
+  assert.equal(segs[0].kind, 'serve')
+  assert.ok(segs[0].start < 40 && segs[0].end > 43, `covers toss → landing (${segs[0].start}-${segs[0].end})`)
 })
 
 test('resolutions never upscale', () => {
@@ -123,4 +135,53 @@ test('resolutions never upscale', () => {
   assert.deepEqual(allowedResolutions({ width: 3840, height: 2160 }), ['720p', '1080p', '1440p', 'source'])
   assert.deepEqual(targetSize({ width: 3840, height: 2160 }, '1080p'), { w: 1920, h: 1080 })
   assert.deepEqual(targetSize({ width: 1080, height: 1920 }, '720p'), { w: 720, h: 1280 })
+})
+
+test('pose: alternating near/far swings make a rally even with no ball tracked; one-sided swinging does not', () => {
+  const a = fakeAnalysis([])
+  const swings = []
+  for (let i = 0; i < 8; i++) swings.push({ t: 30 + i * 1.6, side: (i % 2 ? 'far' : 'near') as 'near' | 'far', overhead: false, speed: 5 })
+  // A player bouncing the ball before serving: fast arm, same side, no exchange.
+  for (let i = 0; i < 6; i++) swings.push({ t: 80 + i * 0.8, side: 'far' as const, overhead: false, speed: 5 })
+  a.poseEvents = { swings, pickups: [], coverage: 1 }
+  const segs = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  assert.equal(segs.length, 1)
+  assert.ok(segs[0].start < 30 && segs[0].end > 41, `${segs[0].start}-${segs[0].end}`)
+})
+
+test('pose: ball pickups damp activity outside exchanges', () => {
+  const tracks: BallTrack[] = []
+  for (let i = 0; i < 4; i++) tracks.push(flight(20 + i * 1.5, 1.0, i % 2 ? -1 : 1))
+  const a = fakeAnalysis(tracks)
+  const before = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  a.poseEvents = { swings: [], pickups: [20.5, 22.0, 23.5, 25.0], coverage: 1 }
+  const after = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  assert.equal(before.length, 1)
+  assert.equal(after.length, 0)
+})
+
+import { clipsForSegments, combineAnalyses, makeTimeline, naturalSort, toLocal } from './timeline.ts'
+
+test('timeline: maps times across files and splits clips at boundaries', () => {
+  const src = (path: string, d: number) => ({ ...fakeAnalysis([]).source, path, durationSec: d })
+  const tl = makeTimeline([src('a', 600), src('b', 600), src('c', 300)])
+  assert.equal(tl.duration, 1500)
+  assert.deepEqual(toLocal(tl, 650), { index: 1, t: 50 })
+  assert.deepEqual(toLocal(tl, 600), { index: 1, t: 0 })
+  const clips = clipsForSegments(tl, [{ start: 590, end: 615 }, { start: 1300, end: 1310 }])
+  assert.deepEqual(clips.map((c) => [c.source.path, c.start, c.end]), [['a', 590, 600], ['b', 0, 15], ['c', 100, 110]])
+  assert.deepEqual(naturalSort(['DJI_0010.MP4', 'DJI_0002.MP4', 'DJI_0001.MP4']), ['DJI_0001.MP4', 'DJI_0002.MP4', 'DJI_0010.MP4'])
+})
+
+test('timeline: a rally that crosses a file boundary is still one rally', () => {
+  // File A ends mid-rally at 60 s; file B continues it.
+  const a = fakeAnalysis([], 60)
+  const b = fakeAnalysis([], 60)
+  for (let i = 0; i < 5; i++) a.tracks.push(flight(52 + i * 1.4, 1.1, i % 2 ? -1 : 1))
+  for (let i = 0; i < 4; i++) b.tracks.push(flight(0.3 + i * 1.4, 1.1, i % 2 ? -1 : 1))
+  const tl = makeTimeline([a.source, { ...b.source, path: 'b' }])
+  const segs = segmentRallies(combineAnalyses(tl, [a, b]), DEFAULT_SEGMENT_PARAMS)
+  assert.equal(segs.length, 1)
+  assert.ok(segs[0].start < 52 && segs[0].end > 65, `${segs[0].start}-${segs[0].end}`)
+  assert.equal(clipsForSegments(tl, segs).length, 2)
 })

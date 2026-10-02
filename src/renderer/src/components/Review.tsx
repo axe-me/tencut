@@ -1,24 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { computeEvidence, estimateShots, totalDuration } from '../../../core/segment'
-import type { AnalysisResult, Segment, SegmentParams, SourceInfo } from '../../../core/types'
+import type { AnalysisResult, Segment, SegmentParams } from '../../../core/types'
+import { toLocal, type Timeline as MatchTimeline } from '../../../core/timeline'
 import { buildSegments, newId, upsertManual, type ProjectState } from '../project'
-import { clamp, fmtDuration, fmtTime } from '../util'
+import { clamp, fmtDuration, fmtTime, plural } from '../util'
 import { Timeline, type View } from './Timeline'
 import { ExportDialog } from './ExportDialog'
 
 interface Props {
-  source: SourceInfo
+  timeline: MatchTimeline
   analysis: AnalysisResult
   project: ProjectState
   onChange: (p: ProjectState) => void
   onRecalibrate: () => void
 }
 
-export function Review({ source, analysis, project, onChange, onRecalibrate }: Props) {
-  const duration = source.durationSec
+export function Review({ timeline, analysis, project, onChange, onRecalibrate }: Props) {
+  const duration = timeline.duration
+  const multi = timeline.sources.length > 1
   const evidence = useMemo(() => computeEvidence(analysis), [analysis])
   const segments = useMemo(() => buildSegments(analysis, project.params, project.manual, evidence), [analysis, project.params, project.manual, evidence])
   const kept = useMemo(() => segments.filter((s) => s.kept), [segments])
+  const serveCount = segments.filter((s) => s.kind === 'serve').length
   const keptDur = totalDuration(segments)
   const shots = useMemo(() => new Map(segments.map((s) => [s.id, estimateShots(analysis, s.start, s.end)])), [segments, analysis])
 
@@ -37,42 +40,76 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
   const setParams = (patch: Partial<SegmentParams>) => onChange({ ...project, params: { ...project.params, ...patch } })
   const setManual = (manual: Segment[]) => onChange({ ...project, manual })
 
-  const seek = useCallback((t: number) => {
-    const v = video.current
-    const tt = clamp(t, 0, duration)
-    if (v) v.currentTime = tt
-    setTime(tt)
-  }, [duration])
+  // One <video> element plays whichever file the playhead is in; all times here are match-timeline times.
+  const [fileIdx, setFileIdx] = useState(0)
+  const fileIdxRef = useRef(0)
+  fileIdxRef.current = fileIdx
+  const pending = useRef<{ t: number; play: boolean } | null>(null)
+  const globalNow = () => timeline.offsets[fileIdxRef.current] + (video.current?.currentTime ?? 0)
 
-  // Keep the timeline playhead in sync, and in "kept only" mode jump over removed parts.
+  const seek = useCallback(
+    (t: number, opts: { play?: boolean } = {}) => {
+      const v = video.current
+      const tt = clamp(t, 0, duration)
+      const loc = toLocal(timeline, tt)
+      if (loc.index !== fileIdxRef.current) {
+        // Switch file; position (and resume) once the new file's metadata is loaded.
+        pending.current = { t: loc.t, play: opts.play ?? (!!v && !v.paused) }
+        fileIdxRef.current = loc.index
+        setFileIdx(loc.index)
+      } else if (v) {
+        v.currentTime = loc.t
+        if (opts.play) v.play()
+      }
+      setTime(tt)
+    },
+    [duration, timeline],
+  )
+
+  const onLoaded = () => {
+    const v = video.current
+    const p = pending.current
+    if (!v || !p) return
+    pending.current = null
+    v.currentTime = p.t
+    v.playbackRate = rate
+    if (p.play) v.play()
+  }
+
+  // Keep the timeline playhead in sync, continue into the next file at the end of one, and in "kept only"
+  // mode jump over removed parts.
   const previewRef = useRef(previewKept)
   previewRef.current = previewKept
   const keptRef = useRef(kept)
   keptRef.current = kept
+  const seekRef = useRef(seek)
+  seekRef.current = seek
   useEffect(() => {
     let raf = 0
     const loop = () => {
       const v = video.current
-      if (v) {
-        let t = v.currentTime
+      if (v && !pending.current) {
+        let t = globalNow()
+        const idx = fileIdxRef.current
+        const fileEnd = idx < timeline.sources.length - 1 && v.duration > 0 && v.currentTime >= v.duration - 0.05
         if (!v.paused && previewRef.current) {
           const ks = keptRef.current
           const inside = ks.find((s) => t >= s.start - 0.05 && t < s.end)
           if (!inside) {
             const next = ks.find((s) => s.start > t)
             if (next) {
-              v.currentTime = next.start
+              seekRef.current(next.start, { play: true })
               t = next.start
             } else v.pause()
-          }
-        }
+          } else if (fileEnd) seekRef.current(timeline.offsets[idx + 1], { play: true })
+        } else if (fileEnd && !v.paused) seekRef.current(timeline.offsets[idx + 1], { play: true })
         setTime((prev) => (Math.abs(prev - t) > 0.02 ? t : prev))
       }
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [timeline]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (video.current) video.current.playbackRate = rate
@@ -92,9 +129,10 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
     const v = video.current
     if (!v) return
     if (v.paused) {
-      if (previewKept && !kept.some((s) => v.currentTime >= s.start && v.currentTime < s.end)) {
-        const next = kept.find((s) => s.start > v.currentTime) ?? kept[0]
-        if (next) v.currentTime = next.start
+      const now = globalNow()
+      if (previewKept && !kept.some((s) => now >= s.start && now < s.end)) {
+        const next = kept.find((s) => s.start > now) ?? kept[0]
+        if (next) return seek(next.start, { play: true })
       }
       v.play()
     } else v.pause()
@@ -185,7 +223,8 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
           <div className="video-wrap">
             <video
               ref={video}
-              src={window.tencut.mediaUrl(source.path)}
+              src={window.tencut.mediaUrl(timeline.sources[fileIdx].path)}
+              onLoadedMetadata={onLoaded}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
               onError={() => setVideoError('This video can’t be previewed here (codec not supported by the built-in player). Detection and export still work.')}
@@ -193,9 +232,14 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
               preload="auto"
             />
             {videoError && <div className="video-error">{videoError}</div>}
+            {multi && (
+              <div className="file-tag" title={timeline.sources[fileIdx].path}>
+                File {fileIdx + 1}/{timeline.sources.length} · {timeline.sources[fileIdx].path.split(/[\\/]/).pop()}
+              </div>
+            )}
             {current && (
               <div className={`rally-tag ${current.kept ? 'kept' : 'dropped'}`}>
-                Rally {segments.indexOf(current) + 1} · {current.kept ? 'kept' : 'removed'}
+                {current.kind === 'serve' ? 'Serve' : 'Rally'} {segments.indexOf(current) + 1} · {current.kept ? 'kept' : 'removed'}
               </div>
             )}
           </div>
@@ -228,7 +272,10 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
         </div>
         <aside className="rally-list">
           <div className="rl-head">
-            <b>{segments.length} rallies</b>
+            <b>
+              {plural(segments.length, 'clip')}
+              {serveCount > 0 && <span className="dim"> · {plural(serveCount, 'serve')}</span>}
+            </b>
             <span className="dim">
               {kept.length} kept · {fmtDuration(keptDur)}
             </span>
@@ -248,8 +295,8 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
                 <span className="rl-idx">{i + 1}</span>
                 <span className="mono">{fmtTime(s.start)}</span>
                 <span className="rl-dur">{(s.end - s.start).toFixed(0)}s</span>
-                <span className="rl-shots" title="Estimated shots">
-                  {shots.get(s.id)} shots
+                <span className="rl-shots" title={s.kind === 'serve' ? 'Serve with no rally after it (usually a fault)' : 'Estimated shots'}>
+                  {s.kind === 'serve' ? <span className="serve-tag">serve</span> : `${shots.get(s.id)} shots`}
                 </span>
                 <span className="rl-conf" title={`Confidence ${(s.score * 100).toFixed(0)}%`}>
                   <span style={{ width: `${s.score * 100}%` }} />
@@ -274,6 +321,7 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
         selectedId={selectedId}
         view={view}
         inMark={inMark}
+        boundaries={timeline.offsets.slice(1)}
         onView={setView}
         onSeek={seek}
         onSelect={setSelectedId}
@@ -321,13 +369,13 @@ export function Review({ source, analysis, project, onChange, onRecalibrate }: P
             Re-mark court
           </button>
           <button className="primary" disabled={!kept.length} onClick={() => setShowExport(true)}>
-            Export {kept.length} rallies…
+            Export {plural(kept.length, 'rally', 'rallies')}…
           </button>
         </div>
       </div>
       {showExport && (
         <ExportDialog
-          source={source}
+          timeline={timeline}
           segments={kept}
           output={project.output}
           onOutput={(output) => onChange({ ...project, output })}

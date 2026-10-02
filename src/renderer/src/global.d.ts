@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import type { TenCutApi } from '../../preload/index'
 
 declare global {

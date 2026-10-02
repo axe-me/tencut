@@ -44,3 +44,5 @@ Full flow: `open` → `click-text Far baseline hard to see` → 4× `clickat` �
   Project edits (court, segments, output settings) live in `…/TenCut/projects`, and a saved project with a cached
   analysis opens straight into Review.
 - `main <js>` runs as an ESM function: `require` is not defined there.
+- Pose analysis ("Track players' strokes", default on) takes ~2.5 min for match.MP4 instead of ~1.5 min. The cache
+  key includes pose on/off, so toggling it re-analyzes.

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { apply, courtToImage, roiPolygon, COURT_L, COURT_W } from '../../../core/court'
-import type { CourtCalibration, Point, SourceInfo } from '../../../core/types'
+import type { CourtCalibration, Point } from '../../../core/types'
+import { toLocal, type Timeline } from '../../../core/timeline'
 import { fmtTime } from '../util'
 
 const PROMPTS: Record<CourtCalibration['mode'], string[]> = {
@@ -29,10 +30,11 @@ const LINES: [number, number, number, number][] = (() => {
   ]
 })()
 
-export function CourtPicker({ source, value, onChange }: { source: SourceInfo; value: CourtCalibration | null; onChange: (c: CourtCalibration | null) => void }) {
+export function CourtPicker({ timeline, value, onChange }: { timeline: Timeline; value: CourtCalibration | null; onChange: (c: CourtCalibration | null) => void }) {
+  const source = timeline.sources[0]
   const [mode, setMode] = useState<CourtCalibration['mode']>(value?.mode ?? 'full')
   const [pts, setPts] = useState<Point[]>(value?.corners ?? [])
-  const [t, setT] = useState(Math.min(60, source.durationSec / 3))
+  const [t, setT] = useState(Math.min(60, timeline.duration / 3))
   const [img, setImg] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [drag, setDrag] = useState<number | null>(null)
@@ -46,7 +48,8 @@ export function CourtPicker({ source, value, onChange }: { source: SourceInfo; v
     setLoading(true)
     const id = window.setTimeout(async () => {
       try {
-        const url = await window.tencut.frame(source.path, t, 1600)
+        const loc = toLocal(timeline, t)
+        const url = await window.tencut.frame(timeline.sources[loc.index].path, loc.t, 1600)
         if (alive) setImg(url)
       } finally {
         if (alive) setLoading(false)
@@ -56,7 +59,7 @@ export function CourtPicker({ source, value, onChange }: { source: SourceInfo; v
       alive = false
       window.clearTimeout(id)
     }
-  }, [source.path, t])
+  }, [timeline, t])
 
   // Report complete calibrations upward.
   useEffect(() => {
@@ -164,8 +167,9 @@ export function CourtPicker({ source, value, onChange }: { source: SourceInfo; v
       </div>
       <div className="cp-scrub">
         <span className="dim">Frame</span>
-        <input type="range" min={0} max={Math.max(1, source.durationSec - 1)} step={1} value={t} onChange={(e) => setT(Number(e.target.value))} />
+        <input type="range" min={0} max={Math.max(1, timeline.duration - 1)} step={1} value={t} onChange={(e) => setT(Number(e.target.value))} />
         <span className="mono">{fmtTime(t)}</span>
+        {timeline.sources.length > 1 && <span className="dim small">file {toLocal(timeline, t).index + 1}</span>}
       </div>
     </div>
   )

@@ -7,3 +7,4 @@ dist
 .tencut-cache
 .shots
 .claude/settings.local.json
+.DS_Store

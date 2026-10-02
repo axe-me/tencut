@@ -2,7 +2,7 @@
 // commands over HTTP so an agent can poke it step by step:
 //   node .claude/skills/run-app/driver.mjs &      # listens on 127.0.0.1:7788
 //   curl -s localhost:7788 -d 'open /path/video.mp4'
-// Commands: open <path> | ss <name> | click <css> | click-text <text> | eval <js> | text [css] | press <key> | main <js> | quit
+// Commands: open <path>[|<path>…] | ss <name> | click <css> | click-text <text> | eval <js> | text [css] | press <key> | main <js> | quit
 import { _electron as electron } from 'playwright-core'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -29,10 +29,11 @@ app.process().stderr?.on('data', (d) => logs.push(String(d)))
 
 const cmds = {
   // Stub the native file dialogs so flows can run unattended, then click the open button.
+  // Several files (a split match): separate paths with '|'.
   async open(p) {
-    await app.evaluate(({ dialog }, p) => {
-      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [p] })
-    }, p)
+    await app.evaluate(({ dialog }, paths) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths })
+    }, p.split('|'))
     return cmds['click-text']('Open match recording')
   },
   async saveas(p) {

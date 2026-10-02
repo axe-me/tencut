@@ -51,7 +51,7 @@ export class FrameAnalyzer {
 
   /**
    * Push the next frame. Returns motion for this frame and ball candidates for the *previous* frame
-   * (which needs a successor for the 3-frame test), as [x, y, area] triples.
+   * (which needs a successor for the 3-frame test), flattened as [x, y, area, clutter] per candidate.
    */
   push(frame: Uint8Array): { motion: number; candidates: number[] } {
     const n = this.w * this.h
@@ -110,7 +110,7 @@ export class FrameAnalyzer {
       seeds.push(i)
     }
     const out: number[] = []
-    const blobs: [number, number, number][] = []
+    const blobs: [number, number, number, number][] = []
     for (const s of seeds) {
       if (visited[s]) continue
       let sp = 0
@@ -150,7 +150,7 @@ export class FrameAnalyzer {
         }
       }
       const ext = Math.max(x1 - x0, y1 - y0) + 1
-      if (area >= 2 && ext <= this.maxBlob && area <= this.maxBlob * 4) blobs.push([sx / area, sy / area, area])
+      if (area >= 2 && ext <= this.maxBlob && area <= this.maxBlob * 4) blobs.push([sx / area, sy / area, area, this.clutter(x0, y0, x1, y1)])
     }
     for (const s of seeds) {
       cand[s] = 0
@@ -158,8 +158,40 @@ export class FrameAnalyzer {
     }
     // Too many candidates in one frame means a camera bump / lighting flicker; keep the most ball-like.
     if (blobs.length > this.maxCand) blobs.sort((a, b) => Math.abs(a[2] - 10) - Math.abs(b[2] - 10)).length = this.maxCand
-    for (const b of blobs) out.push(Math.round(b[0] * 10) / 10, Math.round(b[1] * 10) / 10, b[2])
+    for (const b of blobs) out.push(Math.round(b[0] * 10) / 10, Math.round(b[1] * 10) / 10, b[2], Math.round(b[3] * 100) / 100)
     return out
+  }
+
+  /**
+   * Share of moving pixels in a ring around a blob (0 = isolated, 1 = surrounded by motion). A ball in flight is
+   * a small moving thing in still surroundings; a patch of shirt or shoe sits on a large moving body. This lets
+   * the tracker accept slow-looking ball flights (shots travelling towards/away from the camera) without
+   * accepting players' clothing.
+   */
+  private clutter(x0: number, y0: number, x1: number, y1: number): number {
+    const [g0, g1, g2] = this.gray
+    const { w, h, mask } = this
+    const R = 10
+    const ax = Math.max(0, x0 - R)
+    const bx = Math.min(w - 1, x1 + R)
+    const ay = Math.max(0, y0 - R)
+    const by = Math.min(h - 1, y1 + R)
+    let moving = 0
+    let total = 0
+    for (let y = ay; y <= by; y++) {
+      const inY = y >= y0 - 2 && y <= y1 + 2
+      for (let x = ax; x <= bx; x++) {
+        if (inY && x >= x0 - 2 && x <= x1 + 2) continue
+        const i = y * w + x
+        if (mask[i] === 0) continue
+        total++
+        const v = g1[i]
+        const a = v - g0[i]
+        const b = v - g2[i]
+        if (a > MOTION_T || a < -MOTION_T || b > MOTION_T || b < -MOTION_T) moving++
+      }
+    }
+    return total ? moving / total : 0
   }
 }
 

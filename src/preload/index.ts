@@ -15,12 +15,17 @@ const api = {
   probe: (path: string): Promise<SourceInfo> => ipcRenderer.invoke('media:probe', path),
   frame: (path: string, t: number, width: number): Promise<string> => ipcRenderer.invoke('media:frame', path, t, width),
   mediaUrl: (path: string): string => `tencut-media://file/?p=${encodeURIComponent(path)}`,
-  cachedAnalysis: (path: string, court: CourtCalibration | null): Promise<AnalysisResult | null> => ipcRenderer.invoke('analysis:cached', path, court),
-  analyze: (path: string, court: CourtCalibration | null, source: SourceInfo): Promise<AnalysisResult> => ipcRenderer.invoke('analysis:run', path, court, source),
+  /** Cached per-file analyses (null where missing), in the order given. */
+  cachedAnalysis: (paths: string[], court: CourtCalibration | null, pose: boolean): Promise<(AnalysisResult | null)[]> =>
+    ipcRenderer.invoke('analysis:cached', paths, court, pose),
+  /** Analyse every file that isn't cached yet; resolves with all per-file results in order. */
+  analyze: (paths: string[], court: CourtCalibration | null, sources: SourceInfo[], pose: boolean): Promise<AnalysisResult[]> =>
+    ipcRenderer.invoke('analysis:run', paths, court, sources, pose),
+  poseAvailable: (): Promise<boolean> => ipcRenderer.invoke('analysis:poseAvailable'),
   cancelAnalysis: (): Promise<void> => ipcRenderer.invoke('analysis:cancel'),
   onAnalysisProgress: (cb: (p: Progress) => void) => on('analysis:progress', cb),
-  loadProject: (path: string): Promise<unknown> => ipcRenderer.invoke('project:load', path),
-  saveProject: (path: string, state: unknown): Promise<void> => ipcRenderer.invoke('project:save', path, state),
+  loadProject: (paths: string[]): Promise<unknown> => ipcRenderer.invoke('project:load', paths),
+  saveProject: (paths: string[], state: unknown): Promise<void> => ipcRenderer.invoke('project:save', paths, state),
   estimateExport: (clips: Clip[], o: ExportOptions): Promise<number> => ipcRenderer.invoke('export:estimate', clips, o),
   exportClips: (clips: Clip[], o: ExportOptions): Promise<{ outputPath: string; bytes: number; elapsedSec: number }> => ipcRenderer.invoke('export:run', clips, o),
   cancelExport: (): Promise<void> => ipcRenderer.invoke('export:cancel'),

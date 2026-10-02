@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisResult, SourceInfo } from '../../core/types'
+import { combineAnalyses, makeTimeline, naturalSort } from '../../core/timeline'
 import { newProject, type ProjectState } from './project'
 import { Home } from './components/Home'
 import { Setup } from './components/Setup'
 import { Analyzing } from './components/Analyzing'
 import { Review } from './components/Review'
+import logo from './assets/logo.svg'
 
 type Screen =
   | { name: 'home' }
@@ -14,66 +16,101 @@ type Screen =
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'home' })
-  const [source, setSource] = useState<SourceInfo | null>(null)
+  const [sources, setSources] = useState<SourceInfo[]>([])
   const [project, setProject] = useState<ProjectState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const timeline = useMemo(() => makeTimeline(sources), [sources])
 
-  // Persist project edits (debounced).
+  // Persist project edits (debounced), keyed by the match's list of files.
   const saveTimer = useRef<number>(0)
   useEffect(() => {
     if (!project) return
     window.clearTimeout(saveTimer.current)
-    saveTimer.current = window.setTimeout(() => window.tencut.saveProject(project.sourcePath, project), 400)
+    saveTimer.current = window.setTimeout(() => window.tencut.saveProject(project.sourcePaths, project), 400)
   }, [project])
 
-  const open = useCallback(async (paths: string[]) => {
-    if (!paths.length) return
-    setError(null)
-    setBusy(true)
-    try {
-      const path = paths[0]
-      const info = await window.tencut.probe(path)
-      const saved = (await window.tencut.loadProject(path)) as ProjectState | null
-      const p = saved?.version === 1 ? { ...saved, sourcePath: path } : newProject(info)
-      setSource(info)
-      setProject(p)
-      if (paths.length > 1) setError('Joining several recordings into one match is planned for phase 2 – opened the first file only.')
-      const cached = p.court !== undefined ? await window.tencut.cachedAnalysis(path, p.court) : null
-      setScreen(cached && saved ? { name: 'review', analysis: cached } : { name: 'setup' })
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
+  const load = useCallback(async (paths: string[]): Promise<{ infos: SourceInfo[]; project: ProjectState; saved: boolean }> => {
+    const infos = await Promise.all(paths.map((p) => window.tencut.probe(p)))
+    const saved = (await window.tencut.loadProject(paths)) as ProjectState | null
+    const p = saved?.version === 1 ? { ...saved, sourcePaths: paths } : newProject(infos)
+    return { infos, project: p, saved: !!saved }
   }, [])
 
-  const startAnalysis = useCallback(async (p: ProjectState) => {
-    if (!source) return
-    setProject(p)
-    setError(null)
-    const cached = await window.tencut.cachedAnalysis(source.path, p.court)
-    if (cached) return setScreen({ name: 'review', analysis: cached })
-    setScreen({ name: 'analyzing' })
-    try {
-      const analysis = await window.tencut.analyze(source.path, p.court, source)
-      setScreen({ name: 'review', analysis })
-    } catch (e) {
-      const msg = (e as Error).message
-      if (!/cancel/i.test(msg)) setError(`Analysis failed: ${msg}`)
-      setScreen({ name: 'setup' })
-    }
-  }, [source])
+  const cachedCombined = async (paths: string[], infos: SourceInfo[], p: ProjectState) => {
+    const parts = await window.tencut.cachedAnalysis(paths, p.court, p.usePose !== false)
+    return parts.every((x): x is AnalysisResult => !!x) ? combineAnalyses(makeTimeline(infos), parts) : null
+  }
+
+  const open = useCallback(
+    async (picked: string[]) => {
+      if (!picked.length) return
+      setError(null)
+      setBusy(true)
+      try {
+        const paths = naturalSort([...new Set(picked)])
+        const { infos, project: p, saved } = await load(paths)
+        setSources(infos)
+        setProject(p)
+        const cached = saved && p.court !== undefined ? await cachedCombined(paths, infos, p) : null
+        setScreen(cached ? { name: 'review', analysis: cached } : { name: 'setup' })
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [load],
+  )
+
+  /** Setup changed the list of files (added, removed, reordered): keep the user's settings. */
+  const changeSources = useCallback(
+    async (paths: string[]) => {
+      if (!project || !paths.length) return
+      try {
+        const infos = await Promise.all(paths.map((p) => window.tencut.probe(p)))
+        setSources(infos)
+        setProject({ ...project, sourcePaths: paths })
+      } catch (e) {
+        setError((e as Error).message)
+      }
+    },
+    [project],
+  )
+
+  const startAnalysis = useCallback(
+    async (p: ProjectState) => {
+      if (!sources.length) return
+      setProject(p)
+      setError(null)
+      const usePose = p.usePose !== false
+      const paths = sources.map((s) => s.path)
+      const cached = await cachedCombined(paths, sources, p)
+      if (cached) return setScreen({ name: 'review', analysis: cached })
+      setScreen({ name: 'analyzing' })
+      try {
+        const parts = await window.tencut.analyze(paths, p.court, sources, usePose)
+        setScreen({ name: 'review', analysis: combineAnalyses(makeTimeline(sources), parts) })
+      } catch (e) {
+        const msg = (e as Error).message
+        if (!/cancel/i.test(msg)) setError(`Analysis failed: ${msg}`)
+        setScreen({ name: 'setup' })
+      }
+    },
+    [sources],
+  )
+
+  const title = sources.length > 1 ? `${sources[0].path.split(/[\\/]/).pop()} + ${sources.length - 1} more` : sources[0]?.path.split(/[\\/]/).pop()
 
   return (
     <div className="app">
       <div className="titlebar">
         <span className="brand">
-          <span className="brand-mark">●</span> TenCut
+          <img className="brand-logo" src={logo} alt="" /> TenCut
         </span>
-        {source && screen.name !== 'home' && (
-          <span className="titlebar-file" title={source.path}>
-            {source.path.split(/[\\/]/).pop()}
+        {sources.length > 0 && screen.name !== 'home' && (
+          <span className="titlebar-file" title={sources.map((s) => s.path).join('\n')}>
+            {title}
           </span>
         )}
         <span className="spacer" />
@@ -90,10 +127,18 @@ export function App() {
       )}
       <div className="content">
         {screen.name === 'home' && <Home onOpen={open} busy={busy} />}
-        {screen.name === 'setup' && source && project && <Setup source={source} project={project} onStart={startAnalysis} />}
-        {screen.name === 'analyzing' && source && <Analyzing source={source} onCancel={() => window.tencut.cancelAnalysis()} />}
-        {screen.name === 'review' && source && project && (
-          <Review source={source} analysis={screen.analysis} project={project} onChange={setProject} onRecalibrate={() => setScreen({ name: 'setup' })} />
+        {screen.name === 'setup' && project && sources.length > 0 && (
+          <Setup timeline={timeline} project={project} onStart={startAnalysis} onSources={changeSources} />
+        )}
+        {screen.name === 'analyzing' && sources.length > 0 && <Analyzing duration={timeline.duration} onCancel={() => window.tencut.cancelAnalysis()} />}
+        {screen.name === 'review' && project && sources.length > 0 && (
+          <Review
+            timeline={timeline}
+            analysis={screen.analysis}
+            project={project}
+            onChange={setProject}
+            onRecalibrate={() => setScreen({ name: 'setup' })}
+          />
         )}
       </div>
     </div>

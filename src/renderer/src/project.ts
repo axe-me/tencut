@@ -15,22 +15,29 @@ export const DEFAULT_OUTPUT: OutputSettings = {
 /** What gets persisted per source file. */
 export interface ProjectState {
   version: 1
-  sourcePath: string
+  /** Recordings of the match in playback order (one file, or a camera's split parts). */
+  sourcePaths: string[]
+  /** @deprecated single-file projects saved before multi-file support. */
+  sourcePath?: string
   court: CourtCalibration | null
   output: OutputSettings
   params: SegmentParams
+  /** Run the player pose model during analysis (more accurate, about half the speed). */
+  usePose?: boolean
   /** Segments the user created or edited. They override any overlapping automatic detection. */
   manual: Segment[]
 }
 
-export function newProject(source: SourceInfo): ProjectState {
+export function newProject(sources: SourceInfo[]): ProjectState {
+  const source = sources[0]
   const short = Math.min(source.width, source.height)
   return {
     version: 1,
-    sourcePath: source.path,
+    sourcePaths: sources.map((s) => s.path),
     court: null,
     output: { ...DEFAULT_OUTPUT, resolution: short > 1080 ? '1080p' : 'source' },
     params: { ...DEFAULT_SEGMENT_PARAMS },
+    usePose: true,
     manual: [],
   }
 }

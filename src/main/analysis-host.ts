@@ -6,7 +6,15 @@ import { analyze } from '../core/analyze'
 import type { AnalysisResult, CourtCalibration, Progress, SourceInfo } from '../core/types'
 
 export type HostIn =
-  | { type: 'analyze'; path: string; court: CourtCalibration | null; source: SourceInfo; ffmpeg?: string; ffprobe?: string }
+  | {
+      type: 'analyze'
+      path: string
+      court: CourtCalibration | null
+      source: SourceInfo
+      ffmpeg?: string
+      ffprobe?: string
+      pose?: { detector: string; model: string }
+    }
   | { type: 'cancel' }
 
 export type HostOut =
@@ -33,6 +41,7 @@ port.on('message', async (e: { data: HostIn }) => {
         source: msg.source,
         workerUrl: new URL('./video-worker.js', import.meta.url),
         signal: ctrl.signal,
+        pose: msg.pose,
         onProgress: (progress) => port.postMessage({ type: 'progress', progress } satisfies HostOut),
       })
       port.postMessage({ type: 'result', result } satisfies HostOut)

@@ -146,3 +146,42 @@ export function bbox(poly: Point[]): { x0: number; y0: number; x1: number; y1: n
   }
   return { x0, y0, x1, y1 }
 }
+
+/**
+ * Court floor plus run-off (no vertical extrusion) in image pixels – where players' feet can be. Points that
+ * project behind the camera (beyond the horizon for low cameras) are dropped.
+ */
+export function groundPolygon(cal: CourtCalibration, width: number, height: number, sideMargin = 3.5, endMargin = 6.5): Point[] {
+  const H = courtToImage(cal, width, height)
+  const pts: Point[] = []
+  const xs = [-sideMargin, COURT_W + sideMargin]
+  const steps = 24
+  for (let i = 0; i <= steps; i++) {
+    const y = -endMargin + ((COURT_L + 2 * endMargin) * i) / steps
+    for (const x of xs) pushValid(H, { x, y }, pts, height)
+  }
+  for (let i = 0; i <= steps; i++) {
+    const x = -sideMargin + ((COURT_W + 2 * sideMargin) * i) / steps
+    for (const y of [-endMargin, COURT_L + endMargin]) pushValid(H, { x, y }, pts, height)
+  }
+  return convexHull(pts)
+}
+
+function pushValid(H: Mat3, g: Point, out: Point[], height: number): void {
+  const w = H[6] * g.x + H[7] * g.y + H[8]
+  if (w <= 1e-9) return
+  const p = apply(H, g)
+  if (p.y < -height || p.y > 3 * height) return
+  out.push(p)
+}
+
+export function invert(H: Mat3): Mat3 {
+  const [a, b, c, d, e, f, g, h, i] = H
+  const A = e * i - f * h
+  const B = -(d * i - f * g)
+  const C = d * h - e * g
+  const det = a * A + b * B + c * C
+  if (Math.abs(det) < 1e-12) throw new Error('Singular homography')
+  const k = 1 / det
+  return [A * k, -(b * i - c * h) * k, (b * f - c * e) * k, B * k, (a * i - c * g) * k, -(a * f - c * d) * k, C * k, -(a * h - b * g) * k, (a * e - b * d) * k]
+}

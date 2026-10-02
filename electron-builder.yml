@@ -1,5 +1,6 @@
 appId: app.tencut.desktop
 productName: TenCut
+copyright: Copyright © 2026 TenCut
 directories:
   output: dist
   buildResources: resources
@@ -10,10 +11,20 @@ files:
   - '!node_modules/ffprobe-static/bin/linux/**'
   - '!node_modules/ffprobe-static/bin/win32/**'
   - '!node_modules/ffprobe-static/bin/darwin/x64/**'
+  # onnxruntime-node ships every platform's binaries (~300 MB); keep only this target's.
+  - '!node_modules/onnxruntime-node/bin/napi-v6/linux/**'
+  - '!node_modules/onnxruntime-node/bin/napi-v6/win32/**'
+  - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/**'
+extraResources:
+  - from: resources/models
+    to: models
+    filter: ['*.onnx', 'README.md']
 asarUnpack:
   # Executables can't run from inside an asar archive.
   - node_modules/ffmpeg-static/**
   - node_modules/ffprobe-static/bin/**
+  # Native ONNX Runtime addon + its dylib must be real files.
+  - node_modules/onnxruntime-node/**
   # Analysis runs in a utilityProcess + worker_threads; keep their modules as real files.
   - out/main/**
 mac:
@@ -21,8 +32,14 @@ mac:
     - target: dmg
       arch: [arm64]
   category: public.app-category.video
-  hardenedRuntime: true
-  identity: null
+  icon: resources/icon.png
+  # Ad-hoc signature (no Apple Developer ID): runs on this Mac / Apple Silicon. Distribution to other Macs
+  # needs a Developer ID identity + notarization (then turn hardenedRuntime back on).
+  identity: '-'
+  hardenedRuntime: false
+dmg:
+  title: TenCut ${version}
+  artifactName: TenCut-${version}-${arch}.dmg
 win:
   target: nsis
 linux:

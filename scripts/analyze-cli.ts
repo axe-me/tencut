@@ -23,6 +23,8 @@ const res = await analyze(file, {
   court,
   workerUrl: new URL('../src/core/video-worker.ts', import.meta.url),
   concurrency: opt('--jobs') ? Number(opt('--jobs')) : undefined,
+  pose: args.includes('--no-pose') ? undefined : { detector: 'resources/models/yolox-tiny-humanart.onnx', model: 'resources/models/rtmpose-t-body7.onnx' },
+  range: opt('--range') ? { start: Number(opt('--range')!.split('-')[0]), end: Number(opt('--range')!.split('-')[1]) } : undefined,
   onProgress: (p) => {
     if (Date.now() - last > 2000) {
       last = Date.now()
@@ -31,4 +33,4 @@ const res = await analyze(file, {
   },
 })
 writeFileSync(out, JSON.stringify(res))
-console.log(`done in ${((Date.now() - start) / 1000).toFixed(1)}s; ${res.tracks.length} ball tracks, ${res.audio?.hits.length ?? 0} audio hits, ${res.video.candidates.length / 4} candidates`)
+console.log(`done in ${((Date.now() - start) / 1000).toFixed(1)}s; ${res.tracks.length} ball tracks, ${res.audio?.hits.length ?? 0} audio hits, ${res.video.candidates.length / 5} candidates, ${res.players?.count ?? 0} player poses, ${res.poseEvents?.swings.length ?? 0} swings`)

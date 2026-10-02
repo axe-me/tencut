@@ -7,15 +7,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev --watch",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "node --test --experimental-strip-types 'src/core/**/*.test.ts'",
     "analyze": "node --experimental-strip-types scripts/analyze-cli.ts",
-    "dist": "electron-vite build && electron-builder --mac"
+    "dist": "electron-vite build && electron-builder --mac",
+    "icon": "node scripts/make-icon.mjs"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.19.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -31,6 +33,8 @@
   },
   "dependencies": {
     "ffmpeg-static": "5.3",
-    "ffprobe-static": "^3.1.0"
-  }
+    "ffprobe-static": "^3.1.0",
+    "onnxruntime-node": "1.30"
+  },
+  "author": "TenCut"
 }

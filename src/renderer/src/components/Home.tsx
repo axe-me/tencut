@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import logo from '../assets/logo.svg'
 
 export function Home({ onOpen, busy }: { onOpen: (paths: string[]) => void; busy: boolean }) {
   const [over, setOver] = useState(false)
@@ -18,7 +19,7 @@ export function Home({ onOpen, busy }: { onOpen: (paths: string[]) => void; busy
       }}
     >
       <div className="home-card">
-        <div className="home-icon">🎾</div>
+        <img className="home-logo" src={logo} alt="TenCut" />
         <h1>Cut a match down to the rallies</h1>
         <p className="dim">
           TenCut finds every point in a long tennis recording and removes the dead time – ball collection, walking back, changeovers. Everything runs
@@ -27,7 +28,11 @@ export function Home({ onOpen, busy }: { onOpen: (paths: string[]) => void; busy
         <button className="primary large" disabled={busy} onClick={async () => onOpen((await window.tencut.openVideos()) ?? [])}>
           {busy ? 'Opening…' : 'Open match recording…'}
         </button>
-        <p className="hint">or drop a video file here · MP4, MOV, MKV · any length, up to 4K</p>
+        <p className="hint">
+          or drop video files here · MP4, MOV, MKV · any length, up to 4K
+          <br />
+          Camera split a long match into several files? Select them all – they're joined in order.
+        </p>
         <ol className="steps">
           <li>
             <b>Mark the court</b> you played on (four clicks) and pick the output format.

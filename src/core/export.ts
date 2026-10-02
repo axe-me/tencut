@@ -90,6 +90,13 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
   }
   const done = (async () => {
     if (clips.length === 0) throw new Error('Nothing to export – no segments are kept')
+    // Every part must come out with identical stream parameters for the join, so all clips are encoded to the
+    // first recording's size/fps (only matters when a match mixes recordings of different formats).
+    const ref = clips[0].source
+    if (o.codec === 'copy') {
+      const odd = clips.find((c) => c.source.videoCodec !== ref.videoCodec || c.source.width !== ref.width || c.source.height !== ref.height)
+      if (odd) throw new Error('"No re-encode" needs every recording to have the same resolution and codec – choose H.264 or HEVC instead.')
+    }
     const t0 = Date.now()
     const outDir = dirname(o.outputPath)
     const partsDir = join(outDir, `.${basename(o.outputPath)}.parts`)
@@ -116,17 +123,15 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
         args.push('-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn', '-map_metadata', '-1')
         if (o.codec !== 'copy') {
           const filters: string[] = []
-          if (o.resolution !== 'source') {
-            const { w, h } = targetSize(c.source, o.resolution)
-            if (w !== c.source.width || h !== c.source.height) filters.push(`scale=${w}:${h}:flags=lanczos`)
-          }
+          const { w, h } = targetSize(ref, o.resolution)
+          if (w !== c.source.width || h !== c.source.height) filters.push(`scale=${w}:${h}:flags=lanczos`)
           if (fade > 0) filters.push(`fade=t=in:st=0:d=${fade}`, `fade=t=out:st=${Math.max(0, dur - fade).toFixed(3)}:d=${fade}`)
           if (filters.length) args.push('-vf', filters.join(','))
           // Short audio fades always: avoids clicks at every cut.
           const af = Math.max(fade, 0.03)
           args.push('-af', `afade=t=in:st=0:d=${af},afade=t=out:st=${Math.max(0, dur - af).toFixed(3)}:d=${af}`)
         }
-        args.push(...(await encoderArgs(o, c.source)))
+        args.push(...(await encoderArgs(o, ref)))
         if (o.codec !== 'copy' || ext !== 'mkv') args.push('-write_tmcd', '0')
         args.push('-avoid_negative_ts', 'make_zero', '-y', parts[i])
         const run = runFfmpeg(args)

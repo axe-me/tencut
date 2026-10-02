@@ -6,18 +6,28 @@
  *  - ball: time covered by ball-like trajectories inside the court ROI (primary signal)
  *  - hits: audio impact transients (secondary; neighbouring courts are audible too, so audio alone never
  *    creates a rally – it only supports and extends ball evidence)
+ *  - players (pose model, when available): swings that alternate between the two ends of the court are a
+ *    rally even when the ball itself isn't visible; players bent over picking up balls mark dead time
  * A rally is a stretch where the ball is repeatedly in flight with short gaps (players' strokes, bounces);
- * dead time (ball collection, walking back, towelling) has no fast ball flights.
+ * dead time (ball collection, walking back, towelling) has no fast ball flights and no exchanges.
  */
 import type { AnalysisResult, BallTrack, Segment, SegmentParams } from './types.ts'
 
 export const GRID_HZ = 10
 
 export interface Evidence {
+  /** Ball in play: tracked flights, plus spans between alternating swings. */
   ball: Float32Array
   hits: Float32Array
+  /** 1 where a player swings (for display). */
+  swings: Float32Array
   activity: Float32Array
 }
+
+/** Swings on opposite ends this far apart (s) are an exchange – the ball travelled between the players. */
+const EXCHANGE_GAP: [number, number] = [0.6, 3.5]
+/** Ball-in-play weight for the span of an exchange. */
+const EXCHANGE_WEIGHT = 0.8
 
 export function trackWeight(t: BallTrack, refWidth: number, fps: number): number {
   const n = t.points.length
@@ -54,12 +64,44 @@ export function computeEvidence(a: AnalysisResult): Evidence {
       if (i < n) hits[i] = Math.max(hits[i], Math.min(1, h.s / 25))
     }
   }
+  const swings = new Float32Array(n)
+  const exchange = new Uint8Array(n)
+  const pe = a.poseEvents
+  if (pe) {
+    const sw = pe.swings
+    for (const x of sw) {
+      const i = Math.round(x.t * GRID_HZ)
+      if (i < n) swings[i] = 1
+    }
+    for (let i = 0; i + 1 < sw.length; i++) {
+      const gap = sw[i + 1].t - sw[i].t
+      if (sw[i + 1].side === sw[i].side || gap < EXCHANGE_GAP[0] || gap > EXCHANGE_GAP[1]) continue
+      // The ball is in play from this stroke until shortly after the reply (it has to fly somewhere).
+      const i0 = Math.max(0, Math.floor(sw[i].t * GRID_HZ))
+      const i1 = Math.min(n - 1, Math.ceil((sw[i + 1].t + 1) * GRID_HZ))
+      for (let k = i0; k <= i1; k++) {
+        ball[k] = Math.max(ball[k], EXCHANGE_WEIGHT)
+        exchange[k] = 1
+      }
+    }
+  }
   // Activity: share of the surrounding ~2.4 s with ball in flight, plus a little audio support.
   const ballS = boxMean(ball, Math.round(2.4 * GRID_HZ))
   const hitsS = boxSum(hits, Math.round(3 * GRID_HZ))
   const activity = new Float32Array(n)
   for (let i = 0; i < n; i++) activity[i] = Math.min(1, ballS[i] + 0.08 * Math.min(3, hitsS[i]) * (ballS[i] > 0.05 ? 1 : 0.3))
-  return { ball, hits, activity }
+  // Someone bent over picking up balls, with no exchange going on: dead time.
+  if (pe) {
+    for (const t of pe.pickups) {
+      const c = Math.round(t * GRID_HZ)
+      for (let k = Math.max(0, c - GRID_HZ); k <= Math.min(n - 1, c + GRID_HZ); k++) {
+        if (exchange[k]) continue
+        activity[k] *= 0.3
+        ball[k] *= 0.3
+      }
+    }
+  }
+  return { ball, hits, swings, activity }
 }
 
 export function segmentRallies(a: AnalysisResult, p: SegmentParams, ev = computeEvidence(a)): Segment[] {
@@ -104,8 +146,14 @@ export function segmentRallies(a: AnalysisResult, p: SegmentParams, ev = compute
     else merged.push([...r])
   }
 
-  const out: Segment[] = []
-  const dur = a.source.durationSec
+  // Candidate ranges in seconds (ball-evidence bounds, before padding).
+  interface Range {
+    s: number
+    e: number
+    score: number
+    serveOnly: boolean
+  }
+  const ranges: Range[] = []
   for (const [a0, a1] of merged) {
     let ballTime = 0
     let hitCount = 0
@@ -121,21 +169,127 @@ export function segmentRallies(a: AnalysisResult, p: SegmentParams, ev = compute
     if (ballTime < minBall) continue
     if (len < p.minDuration * 0.5) continue
     const score = Math.min(1, (act / (a1 - a0 + 1)) * 1.3 + Math.min(0.25, hitCount * 0.03))
-    const start = Math.max(0, a0 / GRID_HZ - p.padBefore)
-    const end = Math.min(dur, a1 / GRID_HZ + p.padAfter)
-    if (end - start < p.minDuration) continue
-    out.push({ id: `r${Math.round(start * 10)}`, start: round2(start), end: round2(end), score: round2(score), kept: true })
+    ranges.push({ s: a0 / GRID_HZ, e: a1 / GRID_HZ, score, serveOnly: false })
   }
+
+  // Serves – including faults that never start a rally – are kept as their own short clips.
+  for (const sv of detectServes(a)) {
+    if (ranges.some((r) => sv.hit >= r.s - 0.5 && sv.hit <= r.e + 0.5)) continue
+    ranges.push({ s: sv.toss - 1, e: sv.hit + SERVE_FLIGHT, score: 0.6, serveOnly: true })
+  }
+
+  // Loud racket hits right at a clip's edges mean the ball tracker lost the ball (blurred serve or smash, final
+  // shot out of view); stretch the clip to cover them. Hits must chain within a rally-like rhythm.
+  const loud = (a.audio?.hits ?? []).filter((h) => h.s >= EDGE_HIT_MIN)
+  for (const r of ranges) {
+    const e0 = r.e
+    for (let changed = true; changed && r.e - e0 < 6; ) {
+      changed = false
+      for (const h of loud) {
+        if (h.t > r.e - 0.3 && h.t <= r.e + 2.5 && h.t + 1 > r.e) {
+          r.e = h.t + 1
+          changed = true
+        }
+      }
+    }
+    const before = loud.filter((h) => h.s >= SERVE_HIT_MIN && h.t < r.s && h.t >= r.s - 2.5)
+    if (before.length) r.s = Math.min(r.s, before[0].t - 1.2)
+  }
+
+  const out: Segment[] = []
+  const dur = a.source.durationSec
+  for (const r of ranges) {
+    const start = Math.max(0, r.s - p.padBefore)
+    const end = Math.min(dur, r.e + p.padAfter)
+    if (!r.serveOnly && end - start < p.minDuration) continue
+    out.push({ id: `r${Math.round(start * 10)}`, start: round2(start), end: round2(end), score: round2(r.score), kept: true, kind: r.serveOnly ? 'serve' : 'rally' })
+  }
+  out.sort((x, y) => x.start - y.start)
   // Padding can make neighbours overlap; join them.
   const final: Segment[] = []
   for (const sgm of out) {
     const last = final[final.length - 1]
     if (last && sgm.start <= last.end) {
-      last.end = sgm.end
+      last.end = Math.max(last.end, sgm.end)
       last.score = Math.max(last.score, sgm.score)
+      if (sgm.kind === 'rally') last.kind = 'rally'
     } else final.push(sgm)
   }
   return final
+}
+
+/** Loud hits at a clip's edge extend it (racket impacts are well above this; footsteps/voices below). */
+const EDGE_HIT_MIN = 15
+/** Serve impacts are among the loudest sounds on court. */
+const SERVE_HIT_MIN = 18
+/** Time from serve impact until a fault has landed / the return is under way. */
+const SERVE_FLIGHT = 2
+
+export interface ServeEvent {
+  /** Toss apex time (s). */
+  toss: number
+  /** Racket impact time (s). */
+  hit: number
+}
+
+/**
+ * Serve = a ball toss (a near-vertical rise well above the hand) followed within ~2 s by a loud racket hit.
+ * The served ball itself is often a faint motion-blurred streak the tracker misses, but the toss is slow
+ * and clearly visible, and the impact is one of the loudest sounds on court.
+ */
+export function detectServes(a: AnalysisResult): ServeEvent[] {
+  if (!a.audio) return []
+  const fromPose: ServeEvent[] = []
+  // Pose: an overhead swing with a racket impact at the same moment. (Smashes also qualify, but those happen
+  // inside rallies, where serve clips are never added.)
+  for (const sw of a.poseEvents?.swings ?? []) {
+    if (!sw.overhead) continue
+    const h = a.audio.hits.find((h) => h.s >= 12 && Math.abs(h.t - sw.t) <= 0.4)
+    if (h) fromPose.push({ toss: h.t - 1, hit: h.t })
+  }
+  const fromToss = detectTossServes(a)
+  const all = [...fromPose]
+  for (const s of fromToss) if (!all.some((p) => Math.abs(p.hit - s.hit) < 1)) all.push(s)
+  return all.sort((x, y) => x.hit - y.hit)
+}
+
+function detectTossServes(a: AnalysisResult): ServeEvent[] {
+  if (!a.audio) return []
+  const fps = a.video.fps
+  const minRise = 0.035 * a.video.refWidth
+  const loud = a.audio.hits.filter((h) => h.s >= SERVE_HIT_MIN)
+  const out: ServeEvent[] = []
+  for (const t of a.tracks) {
+    const p = t.points
+    // Largest upward travel (image y decreases) reaching its apex within 1.2 s.
+    let best = 0
+    let apex = -1
+    let from = -1
+    for (let i = 0; i < p.length; i++) {
+      for (let j = i + 1; j < p.length && p[j][0] - p[i][0] <= 1.2 * fps; j++) {
+        const rise = p[i][2] - p[j][2]
+        if (rise > best) {
+          best = rise
+          apex = j
+          from = i
+        }
+      }
+    }
+    if (apex < 0 || best < minRise) continue
+    let x0 = Infinity
+    let x1 = -Infinity
+    for (let k = from; k <= apex; k++) {
+      x0 = Math.min(x0, p[k][1])
+      x1 = Math.max(x1, p[k][1])
+    }
+    if (x1 - x0 > 0.5 * best || apex - from < 3) continue // tosses go straight up
+    const ta = p[apex][0] / fps
+    const h = loud.find((h) => h.t >= ta - 0.2 && h.t <= ta + 2)
+    if (!h) continue
+    if (out.length && Math.abs(out[out.length - 1].hit - h.t) < 0.5) continue
+    out.push({ toss: ta, hit: h.t })
+  }
+  return out.sort((x, y) => x.hit - y.hit)
 }
 
 /** Count likely strokes in a time range (direction reversals in ball tracks + audio hits, de-duplicated). */

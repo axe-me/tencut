@@ -8,10 +8,11 @@ export function fmtTime(sec: number, withTenths = false): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}${t}` : `${m}:${String(ss).padStart(2, '0')}${t}`
 }
 
-export function fmtDuration(sec: number): string {
-  if (sec < 60) return `${Math.round(sec)}s`
+export function fmtDuration(seconds: number): string {
+  const sec = Math.round(seconds)
+  if (sec < 60) return `${sec}s`
   const m = Math.floor(sec / 60)
-  const s = Math.round(sec % 60)
+  const s = sec % 60
   if (m < 60) return `${m}m ${String(s).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
@@ -28,4 +29,8 @@ export function basename(p: string): string {
 
 export function clamp(v: number, a: number, b: number): number {
   return Math.min(b, Math.max(a, v))
+}
+
+export function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`
 }

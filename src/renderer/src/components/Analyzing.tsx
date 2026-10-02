@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Progress, SourceInfo } from '../../../core/types'
+import type { Progress } from '../../../core/types'
 import { fmtDuration } from '../util'
 
-export function Analyzing({ source, onCancel }: { source: SourceInfo; onCancel: () => void }) {
+export function Analyzing({ duration, onCancel }: { duration: number; onCancel: () => void }) {
   const [p, setP] = useState<Progress>({ phase: 'analyze', fraction: 0, message: 'Starting…' })
   const started = useRef(Date.now())
   const [, tick] = useState(0)
@@ -12,11 +12,11 @@ export function Analyzing({ source, onCancel }: { source: SourceInfo; onCancel: 
     return () => window.clearInterval(id)
   }, [])
   const elapsed = (Date.now() - started.current) / 1000
-  const speed = elapsed > 3 ? (p.fraction * source.durationSec) / elapsed : 0
+  const speed = elapsed > 3 ? (p.fraction * duration) / elapsed : 0
   return (
     <div className="center-screen">
       <div className="card progress-card">
-        <h2>Finding rallies…</h2>
+        <h2>Finding rallies…{p.message?.startsWith('File') && <span className="dim"> {p.message}</span>}</h2>
         <div className="progress">
           <div className="bar" style={{ width: `${(p.fraction * 100).toFixed(1)}%` }} />
         </div>

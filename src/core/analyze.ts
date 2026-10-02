@@ -8,13 +8,15 @@
 import { Worker } from 'node:worker_threads'
 import { cpus } from 'node:os'
 import { OnsetDetector, AUDIO_SR } from './audio.ts'
-import { bbox, polygonMask, roiPolygon } from './court.ts'
+import { bbox, groundPolygon, polygonMask, roiPolygon } from './court.ts'
+import { derivePoseEvents, decodePoses, encodePoses } from './pose-events.ts'
 import { ffmpegPath, hwDecodeArgs, probe, runFfmpeg } from './ffmpeg.ts'
 import { trackBalls } from './tracker.ts'
 import type { AnalysisResult, AudioFeatures, CourtCalibration, Progress, SourceInfo, VideoFeatures } from './types.ts'
 import type { ChunkJob, ChunkResult, WorkerIn, WorkerMsg } from './video-worker.ts'
+import { POSE_STRIDE } from './players.ts'
 
-export const ANALYSIS_VERSION = 1
+export const ANALYSIS_VERSION = 3
 
 export interface AnalyzeOptions {
   court: CourtCalibration | null
@@ -28,13 +30,23 @@ export interface AnalyzeOptions {
   signal?: AbortSignal
   onProgress?: (p: Progress) => void
   source?: SourceInfo
+  /** Player pose model files; omit to skip pose estimation. */
+  pose?: { detector: string; model: string }
+  /** Development: analyse only this time range (seconds). */
+  range?: { start: number; end: number }
 }
+
+/** Pose every 3rd analysis frame (5 fps at 15 fps), detector about once a second. */
+const POSE_EVERY = 3
+const POSE_DETECT_EVERY = 5
 
 export async function analyze(path: string, o: AnalyzeOptions): Promise<AnalysisResult> {
   const t0 = Date.now()
   const source = o.source ?? (await probe(path))
   const fps = o.fps ?? 15
-  const concurrency = o.concurrency ?? Math.max(2, Math.min(6, Math.floor(cpus().length / 2)))
+  const nCpu = cpus().length
+  // Pose inference is CPU work on top of decoding, so use more workers when it's on.
+  const concurrency = o.concurrency ?? (o.pose ? Math.max(2, Math.min(8, nCpu - 2)) : Math.max(2, Math.min(6, Math.floor(nCpu / 2))))
   const chunkSec = o.chunkSec ?? 90
 
   // Analysis geometry: downscale the whole frame to analysisWidth, then crop to the ROI's bounding box.
@@ -42,6 +54,7 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
   const rh = Math.round((source.height * rw) / source.width) & ~1
   let crop = { x: 0, y: 0, w: rw, h: rh }
   let mask: Uint8Array
+  let ground: { x: number; y: number }[] = []
   if (o.court) {
     const poly = roiPolygon(o.court, rw, rh)
     const b = bbox(poly)
@@ -53,33 +66,39 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
       crop.w,
       crop.h,
     )
+    ground = groundPolygon(o.court, rw, rh).map((p) => ({ x: p.x - crop.x, y: p.y - crop.y }))
   } else {
     mask = new Uint8Array(rw * rh).fill(1)
   }
 
   const totalFrames = Math.floor(source.durationSec * fps)
+  const firstFrame = o.range ? Math.max(0, Math.floor(o.range.start * fps)) : 0
+  const lastFrame = o.range ? Math.min(totalFrames, Math.ceil(o.range.end * fps)) : totalFrames
   const chunkFrames = Math.round(chunkSec * fps)
   const jobs: ChunkJob[] = []
-  for (let s = 0, id = 0; s < totalFrames; s += chunkFrames, id++) {
+  // Fewer intra-op threads per worker when several workers run pose in parallel.
+  const poseThreads = Math.max(1, Math.floor(nCpu / concurrency) - 1)
+  for (let s = firstFrame, id = 0; s < lastFrame; s += chunkFrames, id++) {
     jobs.push({
       id,
       ffmpeg: ffmpegPath(),
       path,
       fps,
       startFrame: s,
-      endFrame: Math.min(totalFrames, s + chunkFrames),
+      endFrame: Math.min(lastFrame, s + chunkFrames),
       warmup: 3,
       scaleW: rw,
       scaleH: rh,
       crop,
       mask,
       hwArgs: hwDecodeArgs(),
+      pose: o.pose ? { detector: o.pose.detector, model: o.pose.model, ground, every: POSE_EVERY, detectEvery: POSE_DETECT_EVERY, threads: poseThreads } : undefined,
     })
   }
 
   const progress = { audio: source.hasAudio ? 0 : 1, frames: 0 }
   const report = () => {
-    const vf = progress.frames / Math.max(1, totalFrames)
+    const vf = progress.frames / Math.max(1, lastFrame - firstFrame)
     const fraction = Math.min(1, 0.92 * vf + 0.08 * progress.audio)
     const el = (Date.now() - t0) / 1000
     o.onProgress?.({
@@ -99,10 +118,16 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
 
   const motion = new Array<number>(totalFrames).fill(0)
   const candidates: number[] = []
+  const poseRaw: number[] = []
   chunks.sort((a, b) => a.startFrame - b.startFrame)
   for (const c of chunks) {
     for (let i = 0; i < c.motion.length; i++) motion[c.startFrame + i] = Math.round(c.motion[i] * 1e4) / 1e4
     for (const v of c.candidates) candidates.push(v)
+    // Track ids are per chunk; offset them so they stay unique.
+    for (let i = 0; i < c.pose.length; i += POSE_STRIDE) {
+      poseRaw.push(c.pose[i], c.pose[i + 1] + c.id * 64)
+      for (let k = 2; k < POSE_STRIDE; k++) poseRaw.push(c.pose[i + k])
+    }
   }
   const video: VideoFeatures = {
     fps,
@@ -118,6 +143,8 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
     candidates,
   }
   const tracks = trackBalls(video)
+  const players = o.pose ? encodePoses(poseRaw, POSE_EVERY) : undefined
+  const poseEvents = players ? derivePoseEvents(decodePoses(players), video, o.court, POSE_EVERY) : undefined
   o.onProgress?.({ phase: 'analyze', fraction: 1, message: 'Done' })
   return {
     version: ANALYSIS_VERSION,
@@ -126,6 +153,8 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
     video,
     audio,
     tracks,
+    players,
+    poseEvents,
     analyzedAt: new Date().toISOString(),
     elapsedSec: (Date.now() - t0) / 1000,
   }

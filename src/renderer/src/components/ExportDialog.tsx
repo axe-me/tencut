@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { Progress, Segment, SourceInfo } from '../../../core/types'
+import type { Progress, Segment } from '../../../core/types'
+import { clipsForSegments, type Timeline } from '../../../core/timeline'
 import type { OutputSettings as Settings } from '../project'
-import { fmtBytes, fmtDuration } from '../util'
+import { fmtBytes, fmtDuration, plural } from '../util'
 import { OutputSettings } from './OutputSettings'
 
 type State =
@@ -11,17 +12,19 @@ type State =
   | { name: 'error'; message: string }
 
 interface Props {
-  source: SourceInfo
+  timeline: Timeline
   segments: Segment[]
   output: Settings
   onOutput: (o: Settings) => void
   onClose: () => void
 }
 
-export function ExportDialog({ source, segments, output, onOutput, onClose }: Props) {
+export function ExportDialog({ timeline, segments, output, onOutput, onClose }: Props) {
+  const source = timeline.sources[0]
   const [state, setState] = useState<State>({ name: 'settings' })
   const [estimate, setEstimate] = useState<number | null>(null)
-  const clips = segments.map((s) => ({ source, start: Math.max(0, s.start), end: Math.min(source.durationSec, s.end) }))
+  // Rallies that cross from one recording into the next become two back-to-back clips.
+  const clips = clipsForSegments(timeline, segments)
   const total = clips.reduce((t, c) => t + c.end - c.start, 0)
   const ext = output.container
 
@@ -42,7 +45,7 @@ export function ExportDialog({ source, segments, output, onOutput, onClose }: Pr
     const def = await window.tencut.defaultOutputName(source.path, ext)
     const outputPath = await window.tencut.saveOutput(def, ext)
     if (!outputPath) return
-    if (outputPath === source.path) return setState({ name: 'error', message: 'Choose a different file name than the original recording.' })
+    if (timeline.sources.some((s) => s.path === outputPath)) return setState({ name: 'error', message: 'Choose a different file name than the original recording.' })
     setState({ name: 'running', outputPath, progress: { phase: 'encode', fraction: 0, message: 'Starting…' } })
     try {
       const r = await window.tencut.exportClips(clips, { ...output, outputPath })
@@ -58,7 +61,8 @@ export function ExportDialog({ source, segments, output, onOutput, onClose }: Pr
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Export rallies</h2>
         <p className="dim">
-          {segments.length} rallies · {fmtDuration(total)} of {fmtDuration(source.durationSec)}
+          {plural(segments.length, 'clip')} · {fmtDuration(total)} of {fmtDuration(timeline.duration)}
+          {timeline.sources.length > 1 && <> from {plural(timeline.sources.length, 'file')}</>}
           {estimate !== null && state.name === 'settings' && <> · up to ~{fmtBytes(estimate)}</>}
         </p>
         {state.name === 'settings' && (

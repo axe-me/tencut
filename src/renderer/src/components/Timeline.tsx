@@ -17,6 +17,8 @@ interface Props {
   selectedId: string | null
   view: View
   inMark: number | null
+  /** Where one recording ends and the next begins (multi-file matches). */
+  boundaries?: number[]
   onView: (v: View) => void
   onSeek: (t: number) => void
   onSelect: (id: string | null) => void
@@ -40,6 +42,8 @@ const C = {
   hit: 'rgba(255, 200, 90, 0.75)',
   kept: '#2fbf71',
   keptFill: 'rgba(47, 191, 113, 0.28)',
+  serve: '#e0a83a',
+  serveFill: 'rgba(224, 168, 58, 0.25)',
   drop: '#5a6272',
   dropFill: 'rgba(90, 98, 114, 0.18)',
   sel: '#ffffff',
@@ -83,7 +87,7 @@ export function Timeline(p: Props) {
     g.fillStyle = C.lane
     g.fillRect(0, 0, width, OVERVIEW_H)
     for (const s of p.segments) {
-      g.fillStyle = s.kept ? C.kept : C.drop
+      g.fillStyle = !s.kept ? C.drop : s.kind === 'serve' ? C.serve : C.kept
       g.fillRect(ox(s.start), 5, Math.max(1, ox(s.end) - ox(s.start)), OVERVIEW_H - 10)
     }
     g.fillStyle = C.view
@@ -137,6 +141,22 @@ export function Timeline(p: Props) {
       }
     }
 
+    // Player swings from the pose model (only when zoomed in enough to read them)
+    if (span < 600) {
+      const sw = p.evidence.swings
+      g.fillStyle = 'rgba(255,255,255,0.8)'
+      for (let i = Math.max(0, Math.floor(view.start * GRID_HZ)); i < Math.min(sw.length, Math.ceil(view.end * GRID_HZ)); i++) {
+        if (sw[i] > 0) {
+          const x = xOf(i / GRID_HZ)
+          g.beginPath()
+          g.moveTo(x, at + ACT_H - 1)
+          g.lineTo(x - 3, at + ACT_H - 7)
+          g.lineTo(x + 3, at + ACT_H - 7)
+          g.fill()
+        }
+      }
+    }
+
     // Segments
     const st = at + ACT_H + 4
     for (const s of p.segments) {
@@ -144,9 +164,10 @@ export function Timeline(p: Props) {
       const x0 = xOf(s.start)
       const x1 = xOf(s.end)
       const sel = s.id === p.selectedId
-      g.fillStyle = s.kept ? C.keptFill : C.dropFill
+      const serve = s.kind === 'serve'
+      g.fillStyle = !s.kept ? C.dropFill : serve ? C.serveFill : C.keptFill
       g.fillRect(x0, at, x1 - x0, ACT_H)
-      g.fillStyle = s.kept ? C.kept : C.drop
+      g.fillStyle = !s.kept ? C.drop : serve ? C.serve : C.kept
       roundRect(g, x0, st, Math.max(2, x1 - x0), SEG_H - 8, 4)
       g.fill()
       if (!s.kept) {
@@ -177,7 +198,28 @@ export function Timeline(p: Props) {
       if (x1 - x0 > 46) {
         g.fillStyle = s.kept ? '#06240f' : '#c9ced8'
         g.font = '11px -apple-system, system-ui, sans-serif'
-        g.fillText(`${(s.end - s.start).toFixed(0)}s${s.manual ? ' ✎' : ''}`, x0 + 6, st + (SEG_H - 8) / 2)
+        g.fillText(`${serve ? 'Serve ' : ''}${(s.end - s.start).toFixed(0)}s${s.manual ? ' ✎' : ''}`, x0 + 6, st + (SEG_H - 8) / 2)
+      }
+    }
+
+    // File boundaries
+    for (const [bi, b] of (p.boundaries ?? []).entries()) {
+      g.strokeStyle = 'rgba(255, 210, 63, 0.55)'
+      g.setLineDash([4, 4])
+      g.beginPath()
+      g.moveTo(Math.round(ox(b)) + 0.5, 0)
+      g.lineTo(Math.round(ox(b)) + 0.5, OVERVIEW_H)
+      if (b >= view.start && b <= view.end) {
+        const x = Math.round(xOf(b)) + 0.5
+        g.moveTo(x, top)
+        g.lineTo(x, HEIGHT - PAD)
+      }
+      g.stroke()
+      g.setLineDash([])
+      if (b >= view.start && b <= view.end) {
+        g.fillStyle = 'rgba(255, 210, 63, 0.85)'
+        g.font = '10px -apple-system, system-ui, sans-serif'
+        g.fillText(`file ${bi + 2}`, xOf(b) + 4, top + RULER_H + 8)
       }
     }
 
@@ -197,7 +239,7 @@ export function Timeline(p: Props) {
     g.lineTo(px + 6, top)
     g.lineTo(px, top + 8)
     g.fill()
-  }, [width, p.segments, p.evidence, p.time, p.selectedId, view, duration, xOf, tOf, span, p.inMark])
+  }, [width, p.segments, p.evidence, p.time, p.selectedId, view, duration, xOf, tOf, span, p.inMark, p.boundaries])
 
   // ---- interaction
   const hitTest = (x: number, y: number) => {

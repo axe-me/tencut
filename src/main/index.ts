@@ -7,11 +7,16 @@ import { fileURLToPath } from 'node:url'
 import { ffmpegPath, ffprobePath, probe, runFfmpeg } from '../core/ffmpeg'
 import { exportClips, estimateSizeBytes, type Clip, type ExportHandle } from '../core/export'
 import { ANALYSIS_VERSION } from '../core/analyze'
-import type { AnalysisResult, CourtCalibration, ExportOptions, SourceInfo } from '../core/types'
+import type { AnalysisResult, CourtCalibration, ExportOptions, Progress, SourceInfo } from '../core/types'
 import type { HostIn, HostOut } from './analysis-host'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let win: BrowserWindow | null = null
+
+// Packaged builds get the name from the bundle; set it explicitly so development runs match (About panel,
+// dock, userData folder).
+app.setName('TenCut')
+const devIcon = join(here, '../../resources/icon.png')
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'tencut-media', privileges: { standard: true, stream: true, supportFetchAPI: true, secure: true, corsEnabled: true } },
@@ -25,6 +30,7 @@ function createWindow(): void {
     minHeight: 680,
     backgroundColor: '#0f1115',
     title: 'TenCut',
+    icon: !app.isPackaged && existsSync(devIcon) ? devIcon : undefined,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(here, '../preload/index.cjs'),
@@ -96,29 +102,66 @@ function courtKey(c: CourtCalibration | null): string {
   return c ? createHash('sha1').update(JSON.stringify(c)).digest('hex').slice(0, 8) : 'nocourt'
 }
 
-function cachePath(path: string, court: CourtCalibration | null): string {
-  return join(dataDir('analysis'), `${fileKey(path)}-${courtKey(court)}-v${ANALYSIS_VERSION}.json`)
+function readCached(path: string, court: CourtCalibration | null, pose: boolean): AnalysisResult | null {
+  const p = cachePath(path, court, pose && !!poseModels())
+  if (!existsSync(p)) return null
+  try {
+    return forRenderer(JSON.parse(readFileSync(p, 'utf8')) as AnalysisResult)
+  } catch {
+    return null
+  }
+}
+
+/** A match is identified by its ordered list of files (a single file keeps its original key). */
+function projectKey(paths: string[]): string {
+  if (paths.length === 1) return fileKey(paths[0])
+  return createHash('sha1').update(paths.map(fileKey).join('|')).digest('hex').slice(0, 16)
+}
+
+function cachePath(path: string, court: CourtCalibration | null, pose: boolean): string {
+  return join(dataDir('analysis'), `${fileKey(path)}-${courtKey(court)}-${pose ? 'pose' : 'nopose'}-v${ANALYSIS_VERSION}.json`)
+}
+
+/** Bundled ONNX models: resources/models in development, Contents/Resources/models when packaged. */
+function poseModels(): { detector: string; model: string } | undefined {
+  const dir = app.isPackaged ? join(process.resourcesPath, 'models') : join(here, '../../resources/models')
+  const detector = join(dir, 'yolox-tiny-humanart.onnx')
+  const model = join(dir, 'rtmpose-t-body7.onnx')
+  return existsSync(detector) && existsSync(model) ? { detector, model } : undefined
+}
+
+/** The renderer only needs derived pose events; raw keypoints (several MB) stay in the cache file. */
+function forRenderer(r: AnalysisResult): AnalysisResult {
+  const { players: _players, ...rest } = r
+  return rest
 }
 
 // ---- Analysis host (utilityProcess)
 let host: UtilityProcess | null = null
 
-function runAnalysis(path: string, court: CourtCalibration | null, source: SourceInfo): Promise<AnalysisResult> {
+function runAnalysis(
+  path: string,
+  court: CourtCalibration | null,
+  source: SourceInfo,
+  usePose: boolean,
+  onProgress: (p: Progress) => void,
+): Promise<AnalysisResult> {
+  const pose = usePose ? poseModels() : undefined
   return new Promise((resolve, reject) => {
     host?.kill()
     const child = utilityProcess.fork(join(here, 'analysis-host.js'), [], { serviceName: 'TenCut Analysis', stdio: 'inherit' })
     host = child
     let settled = false
     child.on('message', (m: HostOut) => {
-      if (m.type === 'progress') win?.webContents.send('analysis:progress', m.progress)
+      if (m.type === 'progress') onProgress(m.progress)
       else if (m.type === 'result') {
         settled = true
         try {
-          writeFileSync(cachePath(path, court), JSON.stringify(m.result))
+          writeFileSync(cachePath(path, court, !!pose), JSON.stringify(m.result))
         } catch (e) {
           console.warn('cache write failed', e)
         }
-        resolve(m.result)
+        resolve(forRenderer(m.result))
         child.kill()
       } else if (m.type === 'error') {
         settled = true
@@ -130,7 +173,7 @@ function runAnalysis(path: string, court: CourtCalibration | null, source: Sourc
       if (host === child) host = null
       if (!settled) reject(new Error(`Analysis process exited unexpectedly (${code})`))
     })
-    child.postMessage({ type: 'analyze', path, court, source, ffmpeg: ffmpegPath(), ffprobe: ffprobePath() } satisfies HostIn)
+    child.postMessage({ type: 'analyze', path, court, source, ffmpeg: ffmpegPath(), ffprobe: ffprobePath(), pose } satisfies HostIn)
   })
 }
 
@@ -167,25 +210,47 @@ function registerIpc(): void {
     return `data:image/jpeg;base64,${Buffer.concat(chunks).toString('base64')}`
   })
 
-  ipcMain.handle('analysis:cached', (_e, path: string, court: CourtCalibration | null) => {
-    const p = cachePath(path, court)
-    if (!existsSync(p)) return null
-    try {
-      return JSON.parse(readFileSync(p, 'utf8')) as AnalysisResult
-    } catch {
-      return null
-    }
-  })
+  // Per-file results, in timeline order. Each file is cached on its own, so adding a file to a match only
+  // analyses the new one.
+  ipcMain.handle('analysis:cached', (_e, paths: string[], court: CourtCalibration | null, pose: boolean) =>
+    paths.map((path) => readCached(path, court, pose)),
+  )
 
-  ipcMain.handle('analysis:run', (_e, path: string, court: CourtCalibration | null, source: SourceInfo) => runAnalysis(path, court, source))
+  ipcMain.handle('analysis:run', async (_e, paths: string[], court: CourtCalibration | null, sources: SourceInfo[], pose: boolean) => {
+    const total = sources.reduce((s, x) => s + x.durationSec, 0) || 1
+    const out: AnalysisResult[] = []
+    let done = 0
+    const t0 = Date.now()
+    for (let i = 0; i < paths.length; i++) {
+      const cached = readCached(paths[i], court, pose)
+      const dur = sources[i].durationSec
+      if (cached) out.push(cached)
+      else
+        out.push(
+          await runAnalysis(paths[i], court, sources[i], pose, (p) => {
+            const fraction = (done + p.fraction * dur) / total
+            const el = (Date.now() - t0) / 1000
+            win?.webContents.send('analysis:progress', {
+              ...p,
+              fraction,
+              message: paths.length > 1 ? `File ${i + 1} of ${paths.length}` : p.message,
+              etaSec: fraction > 0.02 ? (el / fraction) * (1 - fraction) : undefined,
+            } satisfies Progress)
+          }),
+        )
+      done += dur
+    }
+    return out
+  })
+  ipcMain.handle('analysis:poseAvailable', () => !!poseModels())
   ipcMain.handle('analysis:cancel', () => host?.postMessage({ type: 'cancel' } satisfies HostIn))
 
-  ipcMain.handle('project:load', (_e, path: string) => {
-    const p = join(dataDir('projects'), `${fileKey(path)}.json`)
+  ipcMain.handle('project:load', (_e, paths: string[]) => {
+    const p = join(dataDir('projects'), `${projectKey(paths)}.json`)
     return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null
   })
-  ipcMain.handle('project:save', (_e, path: string, state: unknown) => {
-    writeFileSync(join(dataDir('projects'), `${fileKey(path)}.json`), JSON.stringify(state))
+  ipcMain.handle('project:save', (_e, paths: string[], state: unknown) => {
+    writeFileSync(join(dataDir('projects'), `${projectKey(paths)}.json`), JSON.stringify(state))
   })
 
   ipcMain.handle('export:estimate', (_e, clips: Clip[], o: ExportOptions) => estimateSizeBytes(clips, o))
@@ -208,6 +273,13 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(() => {
+  app.setAboutPanelOptions({
+    applicationName: 'TenCut',
+    applicationVersion: app.getVersion(),
+    copyright: 'Keeps the rallies, cuts the rest. Runs entirely offline.',
+    credits: 'Pose models: RTMPose & YOLOX (OpenMMLab, Apache-2.0). Video: FFmpeg.',
+  })
+  if (process.platform === 'darwin' && !app.isPackaged && existsSync(devIcon)) app.dock?.setIcon(devIcon)
   registerMediaProtocol()
   registerIpc()
   createWindow()
