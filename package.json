@@ -1,7 +1,7 @@
 {
   "name": "tencut",
   "productName": "TenCut",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Offline tennis match editor that keeps the rallies and cuts the dead time",
   "main": "out/main/index.js",
   "private": true,
