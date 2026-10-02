@@ -7,6 +7,7 @@
  */
 import { Worker } from 'node:worker_threads'
 import { cpus } from 'node:os'
+import { basename, dirname } from 'node:path'
 import { OnsetDetector, AUDIO_SR } from './audio.ts'
 import { bbox, groundPolygon, polygonMask, roiPolygon } from './court.ts'
 import { derivePoseEvents, decodePoses, encodePoses } from './pose-events.ts'
@@ -32,6 +33,8 @@ export interface AnalyzeOptions {
   source?: SourceInfo
   /** Player pose model files; omit to skip pose estimation. */
   pose?: { detector: string; model: string }
+  /** Colour LUT (absolute path) applied before analysis, so detection sees graded rather than flat log colours. */
+  lutFile?: string
   /** Development: analyse only this time range (seconds). */
   range?: { start: number; end: number }
 }
@@ -92,6 +95,7 @@ export async function analyze(path: string, o: AnalyzeOptions): Promise<Analysis
       crop,
       mask,
       hwArgs: hwDecodeArgs(),
+      lut: o.lutFile ? { dir: dirname(o.lutFile), file: basename(o.lutFile) } : undefined,
       pose: o.pose ? { detector: o.pose.detector, model: o.pose.model, ground, every: POSE_EVERY, detectEvery: POSE_DETECT_EVERY, threads: poseThreads } : undefined,
     })
   }

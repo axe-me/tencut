@@ -9,6 +9,8 @@ import { exportClips, estimateSizeBytes, type Clip, type ExportHandle } from '..
 import { ANALYSIS_VERSION } from '../core/analyze'
 import type { AnalysisResult, CourtCalibration, ExportOptions, Progress, SourceInfo } from '../core/types'
 import type { HostIn, HostOut } from './analysis-host'
+import { lutFilter } from '../core/lut'
+import { importLut, listLuts, lutData, lutExists, lutFile, removeLut, setDefaultLut } from './luts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let win: BrowserWindow | null = null
@@ -79,11 +81,16 @@ function registerMediaProtocol(): void {
           'Content-Length': String(end - start + 1),
           'Content-Range': `bytes ${start}-${end}/${size}`,
           'Accept-Ranges': 'bytes',
+          // The page is a different origin; CORS lets the WebGL LUT preview read the video's pixels.
+          'Access-Control-Allow-Origin': '*',
         },
       })
     }
     const stream = Readable.toWeb(createReadStream(path)) as ReadableStream
-    return new Response(stream, { status: 200, headers: { 'Content-Type': type, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' } })
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': type, 'Content-Length': String(size), 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' },
+    })
   })
 }
 
@@ -111,8 +118,20 @@ function courtKey(c: CourtCalibration | null): string {
   return c ? createHash('sha1').update(JSON.stringify(c)).digest('hex').slice(0, 8) : 'nocourt'
 }
 
-function readCached(path: string, court: CourtCalibration | null, pose: boolean): AnalysisResult | null {
-  const p = cachePath(path, court, pose && !!poseModels())
+/** Everything that changes analysis results (and so the cache file). */
+interface AnalysisSettings {
+  court: CourtCalibration | null
+  pose: boolean
+  /** LUT applied before analysis; null = analyse the footage as recorded. */
+  lutId: string | null
+}
+
+function effective(a: AnalysisSettings): AnalysisSettings {
+  return { court: a.court, pose: a.pose && !!poseModels(), lutId: lutExists(a.lutId) ? a.lutId : null }
+}
+
+function readCached(path: string, settings: AnalysisSettings): AnalysisResult | null {
+  const p = cachePath(path, effective(settings))
   if (!existsSync(p)) return null
   try {
     return forRenderer(JSON.parse(readFileSync(p, 'utf8')) as AnalysisResult)
@@ -127,8 +146,9 @@ function projectKey(paths: string[]): string {
   return createHash('sha1').update(paths.map(fileKey).join('|')).digest('hex').slice(0, 16)
 }
 
-function cachePath(path: string, court: CourtCalibration | null, pose: boolean): string {
-  return join(dataDir('analysis'), `${fileKey(path)}-${courtKey(court)}-${pose ? 'pose' : 'nopose'}-v${ANALYSIS_VERSION}.json`)
+function cachePath(path: string, a: AnalysisSettings): string {
+  const lut = a.lutId ? `-lut${a.lutId.slice(0, 8)}` : ''
+  return join(dataDir('analysis'), `${fileKey(path)}-${courtKey(a.court)}-${a.pose ? 'pose' : 'nopose'}${lut}-v${ANALYSIS_VERSION}.json`)
 }
 
 /** Bundled ONNX models: resources/models in development, Contents/Resources/models when packaged. */
@@ -148,14 +168,11 @@ function forRenderer(r: AnalysisResult): AnalysisResult {
 // ---- Analysis host (utilityProcess)
 let host: UtilityProcess | null = null
 
-function runAnalysis(
-  path: string,
-  court: CourtCalibration | null,
-  source: SourceInfo,
-  usePose: boolean,
-  onProgress: (p: Progress) => void,
-): Promise<AnalysisResult> {
-  const pose = usePose ? poseModels() : undefined
+function runAnalysis(path: string, requested: AnalysisSettings, source: SourceInfo, onProgress: (p: Progress) => void): Promise<AnalysisResult> {
+  const settings = effective(requested)
+  const pose = settings.pose ? poseModels() : undefined
+  const lut = settings.lutId ? lutFile(settings.lutId) : undefined
+  const court = settings.court
   return new Promise((resolve, reject) => {
     host?.kill()
     const child = utilityProcess.fork(join(here, 'analysis-host.js'), [], { serviceName: 'TenCut Analysis', stdio: 'inherit' })
@@ -166,7 +183,7 @@ function runAnalysis(
       else if (m.type === 'result') {
         settled = true
         try {
-          writeFileSync(cachePath(path, court, !!pose), JSON.stringify(m.result))
+          writeFileSync(cachePath(path, settings), JSON.stringify(m.result))
         } catch (e) {
           console.warn('cache write failed', e)
         }
@@ -182,7 +199,7 @@ function runAnalysis(
       if (host === child) host = null
       if (!settled) reject(new Error(`Analysis process exited unexpectedly (${code})`))
     })
-    child.postMessage({ type: 'analyze', path, court, source, ffmpeg: ffmpegPath(), ffprobe: ffprobePath(), pose } satisfies HostIn)
+    child.postMessage({ type: 'analyze', path, court, source, ffmpeg: ffmpegPath(), ffprobe: ffprobePath(), pose, lutFile: lut } satisfies HostIn)
   })
 }
 
@@ -210,9 +227,13 @@ function registerIpc(): void {
 
   ipcMain.handle('media:probe', (_e, path: string) => probe(path))
 
-  ipcMain.handle('media:frame', async (_e, path: string, t: number, width: number) => {
+  ipcMain.handle('media:frame', async (_e, path: string, t: number, width: number, lutId?: string | null) => {
     // Single JPEG frame for calibration / thumbnails. Fast: input seek + one decoded frame.
-    const run = runFfmpeg(['-v', 'error', '-ss', String(Math.max(0, t)), '-i', path, '-frames:v', '1', '-vf', `scale=${Math.round(width)}:-2`, '-q:v', '3', '-f', 'image2pipe', '-c:v', 'mjpeg', 'pipe:1'])
+    const lut = lutExists(lutId) ? lutFile(lutId) : null
+    const vf = `scale=${Math.round(width)}:-2${lut ? `,${lutFilter(basename(lut))}` : ''}`
+    const run = runFfmpeg(['-v', 'error', '-ss', String(Math.max(0, t)), '-i', path, '-frames:v', '1', '-vf', vf, '-q:v', '3', '-f', 'image2pipe', '-c:v', 'mjpeg', 'pipe:1'], {
+      cwd: lut ? dirname(lut) : undefined,
+    })
     const chunks: Buffer[] = []
     run.proc.stdout!.on('data', (d: Buffer) => chunks.push(d))
     await run.done
@@ -221,22 +242,20 @@ function registerIpc(): void {
 
   // Per-file results, in timeline order. Each file is cached on its own, so adding a file to a match only
   // analyses the new one.
-  ipcMain.handle('analysis:cached', (_e, paths: string[], court: CourtCalibration | null, pose: boolean) =>
-    paths.map((path) => readCached(path, court, pose)),
-  )
+  ipcMain.handle('analysis:cached', (_e, paths: string[], settings: AnalysisSettings) => paths.map((path) => readCached(path, settings)))
 
-  ipcMain.handle('analysis:run', async (_e, paths: string[], court: CourtCalibration | null, sources: SourceInfo[], pose: boolean) => {
+  ipcMain.handle('analysis:run', async (_e, paths: string[], settings: AnalysisSettings, sources: SourceInfo[]) => {
     const total = sources.reduce((s, x) => s + x.durationSec, 0) || 1
     const out: AnalysisResult[] = []
     let done = 0
     const t0 = Date.now()
     for (let i = 0; i < paths.length; i++) {
-      const cached = readCached(paths[i], court, pose)
+      const cached = readCached(paths[i], settings)
       const dur = sources[i].durationSec
       if (cached) out.push(cached)
       else
         out.push(
-          await runAnalysis(paths[i], court, sources[i], pose, (p) => {
+          await runAnalysis(paths[i], settings, sources[i], (p) => {
             const fraction = (done + p.fraction * dur) / total
             const el = (Date.now() - t0) / 1000
             win?.webContents.send('analysis:progress', {
@@ -264,7 +283,8 @@ function registerIpc(): void {
 
   ipcMain.handle('export:estimate', (_e, clips: Clip[], o: ExportOptions) => estimateSizeBytes(clips, o))
   ipcMain.handle('export:run', async (_e, clips: Clip[], o: ExportOptions) => {
-    exportHandle = exportClips(clips, o, (p) => win?.webContents.send('export:progress', p))
+    const lut = lutExists(o.lutId) ? lutFile(o.lutId) : undefined
+    exportHandle = exportClips(clips, { ...o, lutFile: lut }, (p) => win?.webContents.send('export:progress', p))
     try {
       return await exportHandle.done
     } finally {
@@ -272,6 +292,21 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('export:cancel', () => exportHandle?.cancel())
+
+  // ---- LUT library
+  ipcMain.handle('luts:list', () => listLuts())
+  ipcMain.handle('luts:import', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      title: 'Load a colour LUT',
+      properties: ['openFile'],
+      filters: [{ name: '3D LUT', extensions: ['cube', 'CUBE'] }],
+    })
+    return r.canceled || !r.filePaths[0] ? null : importLut(r.filePaths[0])
+  })
+  ipcMain.handle('luts:importPath', (_e, path: string) => importLut(path))
+  ipcMain.handle('luts:remove', (_e, id: string) => removeLut(id))
+  ipcMain.handle('luts:setDefault', (_e, id: string | null) => setDefaultLut(id))
+  ipcMain.handle('luts:data', (_e, id: string) => lutData(id))
 
   ipcMain.handle('shell:reveal', (_e, path: string) => shell.showItemInFolder(path))
   ipcMain.handle('shell:open', (_e, path: string) => shell.openPath(path))

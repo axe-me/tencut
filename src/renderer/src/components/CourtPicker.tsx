@@ -30,7 +30,17 @@ const LINES: [number, number, number, number][] = (() => {
   ]
 })()
 
-export function CourtPicker({ timeline, value, onChange }: { timeline: Timeline; value: CourtCalibration | null; onChange: (c: CourtCalibration | null) => void }) {
+export function CourtPicker({
+  timeline,
+  value,
+  onChange,
+  lutId,
+}: {
+  timeline: Timeline
+  value: CourtCalibration | null
+  onChange: (c: CourtCalibration | null) => void
+  lutId?: string | null
+}) {
   const source = timeline.sources[0]
   const [mode, setMode] = useState<CourtCalibration['mode']>(value?.mode ?? 'full')
   const [pts, setPts] = useState<Point[]>(value?.corners ?? [])
@@ -49,7 +59,7 @@ export function CourtPicker({ timeline, value, onChange }: { timeline: Timeline;
     const id = window.setTimeout(async () => {
       try {
         const loc = toLocal(timeline, t)
-        const url = await window.tencut.frame(timeline.sources[loc.index].path, loc.t, 1600)
+        const url = await window.tencut.frame(timeline.sources[loc.index].path, loc.t, 1600, lutId)
         if (alive) setImg(url)
       } finally {
         if (alive) setLoading(false)
@@ -59,7 +69,7 @@ export function CourtPicker({ timeline, value, onChange }: { timeline: Timeline;
       alive = false
       window.clearTimeout(id)
     }
-  }, [timeline, t])
+  }, [timeline, t, lutId])
 
   // Report complete calibrations upward.
   useEffect(() => {

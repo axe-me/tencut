@@ -83,8 +83,8 @@ export interface FfmpegRun {
 }
 
 /** Spawn ffmpeg; rejects with the tail of stderr on non-zero exit. */
-export function runFfmpeg(args: string[], opts: { onStderr?: (line: string) => void } = {}): FfmpegRun {
-  const proc = spawn(ffmpegPath(), ['-hide_banner', '-nostdin', ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+export function runFfmpeg(args: string[], opts: { onStderr?: (line: string) => void; cwd?: string } = {}): FfmpegRun {
+  const proc = spawn(ffmpegPath(), ['-hide_banner', '-nostdin', ...args], { stdio: ['ignore', 'pipe', 'pipe'], cwd: opts.cwd })
   let tail = ''
   let buf = ''
   proc.stderr!.setEncoding('utf8')

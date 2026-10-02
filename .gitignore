@@ -9,3 +9,4 @@ dist
 .claude/settings.local.json
 .DS_Store
 resources/bin
+*.cube

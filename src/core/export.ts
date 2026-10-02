@@ -11,6 +11,7 @@ import { dirname, basename, join } from 'node:path'
 import { availableEncoders, hardwareEncoder, hwDecodeArgs, runFfmpeg, type FfmpegRun } from './ffmpeg.ts'
 import type { ExportOptions, Progress, SourceInfo } from './types.ts'
 import { targetSize } from './resolutions.ts'
+import { lutFilter } from './lut.ts'
 export { allowedResolutions, targetSize } from './resolutions.ts'
 
 export interface Clip {
@@ -103,6 +104,7 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
     // Every part must come out with identical stream parameters for the join, so all clips are encoded to the
     // first recording's size/fps (only matters when a match mixes recordings of different formats).
     const ref = clips[0].source
+    if (o.codec === 'copy' && o.lutFile) throw new Error('A colour LUT needs re-encoding – choose H.264 or HEVC instead of "No re-encode".')
     if (o.codec === 'copy') {
       const odd = clips.find((c) => c.source.videoCodec !== ref.videoCodec || c.source.width !== ref.width || c.source.height !== ref.height)
       if (odd) throw new Error('"No re-encode" needs every recording to have the same resolution and codec – choose H.264 or HEVC instead.')
@@ -135,6 +137,8 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
           const filters: string[] = []
           const { w, h } = targetSize(ref, o.resolution)
           if (w !== c.source.width || h !== c.source.height) filters.push(`scale=${w}:${h}:flags=lanczos`)
+          // Grade after downscaling: same look, far less work for 1080p/720p exports.
+          if (o.lutFile) filters.push(lutFilter(basename(o.lutFile)))
           if (fade > 0) filters.push(`fade=t=in:st=0:d=${fade}`, `fade=t=out:st=${Math.max(0, dur - fade).toFixed(3)}:d=${fade}`)
           if (filters.length) args.push('-vf', filters.join(','))
           // Short audio fades always: avoids clicks at every cut.
@@ -144,7 +148,7 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
         args.push(...(await encoderArgs(o, ref)))
         if (o.codec !== 'copy' || ext !== 'mkv') args.push('-write_tmcd', '0')
         args.push('-avoid_negative_ts', 'make_zero', '-y', parts[i])
-        const run = runFfmpeg(args)
+        const run = runFfmpeg(args, { cwd: o.lutFile ? dirname(o.lutFile) : undefined })
         running.add(run)
         let buf = ''
         run.proc.stdout!.setEncoding('utf8')

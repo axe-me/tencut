@@ -14,6 +14,7 @@ export type HostIn =
       ffmpeg?: string
       ffprobe?: string
       pose?: { detector: string; model: string }
+      lutFile?: string
     }
   | { type: 'cancel' }
 
@@ -42,6 +43,7 @@ port.on('message', async (e: { data: HostIn }) => {
         workerUrl: new URL('./video-worker.js', import.meta.url),
         signal: ctrl.signal,
         pose: msg.pose,
+        lutFile: msg.lutFile,
         onProgress: (progress) => port.postMessage({ type: 'progress', progress } satisfies HostOut),
       })
       port.postMessage({ type: 'result', result } satisfies HostOut)

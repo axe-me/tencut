@@ -1,6 +1,7 @@
 import { allowedResolutions, RES_LABEL, targetSize } from '../../../core/resolutions'
 import type { OutputCodec, OutputContainer, SourceInfo } from '../../../core/types'
 import type { OutputSettings as Settings } from '../project'
+import { LutPicker } from './LutPicker'
 
 const CODECS: { id: OutputCodec; label: string; hint: string }[] = [
   { id: 'h264', label: 'H.264', hint: 'Plays everywhere' },
@@ -23,6 +24,10 @@ export function OutputSettings({ source, value, onChange }: { source: SourceInfo
   return (
     <div className="output-settings">
       <div className="field">
+        <label>Colour (LUT)</label>
+        <LutPicker value={value.lutId} onChange={(lutId) => set({ lutId })} disabled={copy} />
+      </div>
+      <div className="field">
         <label>Format</label>
         <div className="seg">
           {CONTAINERS.map((c) => (
@@ -36,7 +41,13 @@ export function OutputSettings({ source, value, onChange }: { source: SourceInfo
         <label>Video codec</label>
         <div className="seg">
           {CODECS.map((c) => (
-            <button key={c.id} className={value.codec === c.id ? 'on' : ''} title={c.hint} onClick={() => set({ codec: c.id })}>
+            <button
+              key={c.id}
+              className={value.codec === c.id ? 'on' : ''}
+              title={c.id === 'copy' && value.lutId ? 'Not available with a LUT (it needs re-encoding)' : c.hint}
+              disabled={c.id === 'copy' && !!value.lutId}
+              onClick={() => set({ codec: c.id })}
+            >
               {c.label}
             </button>
           ))}

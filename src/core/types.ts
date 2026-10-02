@@ -165,6 +165,10 @@ export interface ExportOptions {
   hardware: boolean
   /** Add a short audio/video crossfade between rallies. */
   fadeMs: number
+  /** Colour LUT from the user's library (applied to preview, analysis and export). */
+  lutId?: string | null
+  /** Absolute path of the LUT file, resolved by the main process for the exporter. */
+  lutFile?: string
 }
 
 export interface Progress {

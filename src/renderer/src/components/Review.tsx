@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { computeEvidence, estimateShots, totalDuration } from '../../../core/segment'
 import type { AnalysisResult, Segment, SegmentParams } from '../../../core/types'
 import { toLocal, type Timeline as MatchTimeline } from '../../../core/timeline'
-import { buildSegments, newId, upsertManual, type ProjectState } from '../project'
+import { buildSegments, newId, setAllKept, upsertManual, type ProjectState } from '../project'
 import { clamp, fmtDuration, fmtTime, plural } from '../util'
 import { Timeline, type View } from './Timeline'
 import { ExportDialog } from './ExportDialog'
+import { LutView } from './LutView'
+import { LutPicker } from './LutPicker'
 
 interface Props {
   timeline: MatchTimeline
@@ -35,6 +37,7 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
   const [inMark, setInMark] = useState<number | null>(null)
   const [showExport, setShowExport] = useState(false)
   const [videoError, setVideoError] = useState<string | null>(null)
+  const lutId = project.output.lutId ?? null
 
   const selected = segments.find((s) => s.id === selectedId) ?? null
   const setParams = (patch: Partial<SegmentParams>) => onChange({ ...project, params: { ...project.params, ...patch } })
@@ -223,6 +226,7 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
           <div className="video-wrap">
             <video
               ref={video}
+              crossOrigin="anonymous"
               src={window.tencut.mediaUrl(timeline.sources[fileIdx].path)}
               onLoadedMetadata={onLoaded}
               onPlay={() => setPlaying(true)}
@@ -231,6 +235,7 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
               onClick={togglePlay}
               preload="auto"
             />
+            <LutView video={video} lutId={lutId} enabled />
             {videoError && <div className="video-error">{videoError}</div>}
             {multi && (
               <div className="file-tag" title={timeline.sources[fileIdx].path}>
@@ -257,6 +262,10 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
               {fmtTime(time, true)} <span className="dim">/ {fmtTime(duration)}</span>
             </span>
             <span className="spacer" />
+            <label className="inline-field" title="Colour LUT for the preview and export">
+              LUT
+              <LutPicker compact value={lutId} onChange={(id) => onChange({ ...project, output: { ...project.output, lutId: id } })} />
+            </label>
             <label className="check" title="Skip removed parts while playing (P)">
               <input type="checkbox" checked={previewKept} onChange={(e) => setPreviewKept(e.target.checked)} />
               Play kept only
@@ -272,10 +281,21 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
         </div>
         <aside className="rally-list">
           <div className="rl-head">
-            <b>
-              {plural(segments.length, 'clip')}
-              {serveCount > 0 && <span className="dim"> · {plural(serveCount, 'serve')}</span>}
-            </b>
+            <label className="rl-all" title={kept.length === segments.length ? 'Untick all clips' : 'Tick all clips'}>
+              <input
+                type="checkbox"
+                ref={(el) => {
+                  if (el) el.indeterminate = kept.length > 0 && kept.length < segments.length
+                }}
+                checked={segments.length > 0 && kept.length === segments.length}
+                disabled={!segments.length}
+                onChange={(e) => setManual(setAllKept(analysis, project.params, project.manual, segments, e.target.checked))}
+              />
+              <b>
+                {plural(segments.length, 'clip')}
+                {serveCount > 0 && <span className="dim"> · {plural(serveCount, 'serve')}</span>}
+              </b>
+            </label>
             <span className="dim">
               {kept.length} kept · {fmtDuration(keptDur)}
             </span>

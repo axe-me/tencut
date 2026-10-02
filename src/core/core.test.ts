@@ -225,3 +225,18 @@ test('export: Windows paths are safe in the concat list; encoder flags per GPU f
   assert.deepEqual(qsv.slice(0, 2), ['-c:v', 'h264_qsv'])
   assert.ok(qsv.includes('nv12'))
 })
+
+import { lutFilter, parseCube } from './lut.ts'
+
+test('lut: parses a .cube (red fastest), rejects bad ones, builds a safe ffmpeg filter', () => {
+  const rows: string[] = []
+  for (let b = 0; b < 2; b++) for (let g = 0; g < 2; g++) for (let r = 0; r < 2; r++) rows.push(`${r} ${g} ${b}`)
+  const lut = parseCube(`# identity\nTITLE "id"\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n${rows.join('\n')}\n`)
+  assert.equal(lut.size, 2)
+  assert.equal(lut.title, 'id')
+  assert.deepEqual(Array.from(lut.data.slice(0, 6)), [0, 0, 0, 1, 0, 0]) // second entry: red = 1
+  assert.throws(() => parseCube('LUT_1D_SIZE 4\n0 0 0'), /1D/)
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\n0 0 0\n'), /expected 8/)
+  assert.equal(lutFilter('a1b2c3.cube'), 'format=rgb48le,lut3d=file=a1b2c3.cube:interp=tetrahedral')
+  assert.throws(() => lutFilter("C:\\x'y.cube"), /Unsafe/)
+})

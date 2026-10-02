@@ -10,6 +10,7 @@ export const DEFAULT_OUTPUT: OutputSettings = {
   quality: 60,
   hardware: true,
   fadeMs: 0,
+  lutId: null,
 }
 
 /** What gets persisted per source file. */
@@ -24,18 +25,20 @@ export interface ProjectState {
   params: SegmentParams
   /** Run the player pose model during analysis (more accurate, about half the speed). */
   usePose?: boolean
+  /** LUT the cached analysis was made with (the output LUT can change later without re-analysing). */
+  analysisLutId?: string | null
   /** Segments the user created or edited. They override any overlapping automatic detection. */
   manual: Segment[]
 }
 
-export function newProject(sources: SourceInfo[]): ProjectState {
+export function newProject(sources: SourceInfo[], defaultLutId: string | null = null): ProjectState {
   const source = sources[0]
   const short = Math.min(source.width, source.height)
   return {
     version: 1,
     sourcePaths: sources.map((s) => s.path),
     court: null,
-    output: { ...DEFAULT_OUTPUT, resolution: short > 1080 ? '1080p' : 'source' },
+    output: { ...DEFAULT_OUTPUT, resolution: short > 1080 ? '1080p' : 'source', lutId: defaultLutId },
     params: { ...DEFAULT_SEGMENT_PARAMS },
     usePose: true,
     manual: [],
@@ -73,4 +76,24 @@ export function migrateProject(p: ProjectState): ProjectState {
     return { ...p, params: { ...p.params, padBefore: DEFAULT_SEGMENT_PARAMS.padBefore, padAfter: DEFAULT_SEGMENT_PARAMS.padAfter } }
   }
   return p
+}
+
+/**
+ * Tick or untick every clip. Unticking turns automatic clips into manual "removed" entries (like unticking
+ * them one by one). Ticking again drops entries that only differed from the detection by being unticked,
+ * so those clips follow the Detection slider again; clips with trimmed edges keep their edits.
+ */
+export function setAllKept(analysis: AnalysisResult, params: SegmentParams, manual: Segment[], segments: Segment[], kept: boolean): Segment[] {
+  if (!kept) {
+    const byId = new Map(manual.map((m) => [m.id, m]))
+    for (const s of segments) byId.set(s.id, { ...(byId.get(s.id) ?? s), kept: false, manual: true })
+    return [...byId.values()].sort((a, b) => a.start - b.start)
+  }
+  const auto = new Map(segmentRallies(analysis, params).map((a) => [a.id, a]))
+  return manual
+    .map((m) => ({ ...m, kept: true }))
+    .filter((m) => {
+      const a = auto.get(m.id)
+      return !(a && Math.abs(a.start - m.start) < 0.01 && Math.abs(a.end - m.end) < 0.01)
+    })
 }

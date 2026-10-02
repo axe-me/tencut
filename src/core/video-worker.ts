@@ -6,6 +6,7 @@ import { parentPort } from 'node:worker_threads'
 import { spawn } from 'node:child_process'
 import { FrameAnalyzer } from './video.ts'
 import { PlayerTracker } from './players.ts'
+import { lutFilter } from './lut.ts'
 import type { Point } from './types.ts'
 
 export interface ChunkJob {
@@ -23,6 +24,8 @@ export interface ChunkJob {
   crop: { x: number; y: number; w: number; h: number }
   mask: Uint8Array
   hwArgs: string[]
+  /** Colour LUT applied before analysis (log footage → normal colours): folder + plain file name. */
+  lut?: { dir: string; file: string }
   /** Player pose: model files and the court floor polygon (crop pixels). Omitted = no pose. */
   pose?: { detector: string; model: string; ground: Point[]; every: number; detectEvery: number; threads: number }
 }
@@ -67,7 +70,8 @@ async function runChunk(job: ChunkJob): Promise<ChunkResult> {
   const nFrames = job.endFrame - firstFrame
   const dur = nFrames / job.fps
   const { w, h, x, y } = job.crop
-  const vf = `fps=${job.fps},scale=${job.scaleW}:${job.scaleH}:flags=fast_bilinear,crop=${w}:${h}:${x}:${y},format=rgb24`
+  const grade = job.lut ? `${lutFilter(job.lut.file)},` : ''
+  const vf = `fps=${job.fps},scale=${job.scaleW}:${job.scaleH}:flags=fast_bilinear,crop=${w}:${h}:${x}:${y},${grade}format=rgb24`
   const args = [
     '-hide_banner', '-nostdin', '-v', 'error',
     ...job.hwArgs,
@@ -81,7 +85,7 @@ async function runChunk(job: ChunkJob): Promise<ChunkResult> {
   const players = job.pose
     ? new PlayerTracker(await poseRunner(job.pose), { ground: job.pose.ground, detectEvery: job.pose.detectEvery, maxPlayers: 4 })
     : null
-  const proc = spawn(job.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = spawn(job.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd: job.lut?.dir })
   current = proc
   let err = ''
   proc.stderr.on('data', (d) => (err = (err + d).slice(-2000)))

@@ -32,7 +32,12 @@ Everything runs locally: ffmpeg and ffprobe are bundled, there are no network ca
      - Set the lead-in and tail padding.
    - "Play kept only" previews the cut.
    - Edits persist per file.
-6. **Export.** Each rally is encoded separately with hardware encoding (VideoToolbox), then the pieces are joined without re-encoding.
+6. **Colour (LUT).** For log footage (DJI D-Log / D-Log M, Sony S-Log…), pick a `.cube` LUT under Output.
+   - **Load once:** loaded LUTs are copied into the app's library, so they keep working if the original file moves. The last LUT you chose becomes the default for new matches.
+   - **Analysis:** detection runs on the graded image.
+   - **Preview:** graded live with WebGL. The LUT dropdown in the player switches LUTs, or to No LUT, for before/after.
+   - **Export:** graded with ffmpeg `lut3d`, using 16-bit RGB and tetrahedral interpolation.
+7. **Export.** Each rally is encoded separately with hardware encoding (VideoToolbox), then the pieces are joined without re-encoding.
 
 Shortcuts:
 
@@ -101,6 +106,7 @@ src/core/          pure TypeScript, no Electron (runs under plain Node for CLI +
   tracker.ts       links candidates into trajectories; keeps fast, coherent ones (ball) and drops clothing/noise
   segment.ts       evidence → rallies (hysteresis, gap merging, padding); runs in ms, so the UI re-runs it live
   export.ts        per-clip encode (seek straight to each rally) + concat demuxer join
+  lut.ts           .cube parser (preview) + ffmpeg lut3d filter (analysis, export, calibration frames)
 src/main/          Electron main: window, IPC, tencut-media:// protocol (Range support), caches, export
   analysis-host.ts utilityProcess that hosts analysis, so the UI and main process never block
 src/preload/       contextBridge API (window.tencut)

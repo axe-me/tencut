@@ -51,7 +51,7 @@ export function Setup({ timeline, project, onStart, onSources }: Props) {
             </button>
           </div>
         ) : (
-          <CourtPicker timeline={timeline} value={court} onChange={setCourt} />
+          <CourtPicker timeline={timeline} value={court} onChange={setCourt} lutId={output.lutId} />
         )}
       </section>
       <aside className="setup-side">
