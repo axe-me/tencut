@@ -63,3 +63,14 @@ export function upsertManual(manual: Segment[], seg: Segment): Segment[] {
   const others = manual.filter((m) => m.id !== seg.id)
   return [...others, s].sort((a, b) => a.start - b.start)
 }
+
+/**
+ * Clip edges now snap to the first/last shot with a built-in lead-in, so the padding defaults went from 1.5/1.5 s
+ * to 0.5/1 s of *extra* time. Projects still on the old defaults move to the new ones; customised values stay.
+ */
+export function migrateProject(p: ProjectState): ProjectState {
+  if (p.params.padBefore === 1.5 && p.params.padAfter === 1.5) {
+    return { ...p, params: { ...p.params, padBefore: DEFAULT_SEGMENT_PARAMS.padBefore, padAfter: DEFAULT_SEGMENT_PARAMS.padAfter } }
+  }
+  return p
+}

@@ -185,3 +185,43 @@ test('timeline: a rally that crosses a file boundary is still one rally', () => 
   assert.ok(segs[0].start < 52 && segs[0].end > 65, `${segs[0].start}-${segs[0].end}`)
   assert.equal(clipsForSegments(tl, segs).length, 2)
 })
+
+test('edges: clip starts just before the serve (not during ball bouncing) and ends after the last shot', () => {
+  const a = fakeAnalysis([])
+  const sw: { t: number; side: 'near' | 'far'; overhead: boolean; speed: number }[] = []
+  // Server bounces the ball (same-side "swings") from 30 s, serves at 36 s, then a 4-shot exchange.
+  for (let i = 0; i < 4; i++) sw.push({ t: 30 + i * 1.2, side: 'near', overhead: false, speed: 4 })
+  sw.push({ t: 36, side: 'near', overhead: true, speed: 6 })
+  for (let i = 1; i <= 4; i++) sw.push({ t: 36 + i * 1.6, side: i % 2 ? 'far' : 'near', overhead: false, speed: 5 })
+  a.poseEvents = { swings: sw, pickups: [], coverage: 1 }
+  a.audio = { hop: 0.01, onset: [], hits: [{ t: 36.05, s: 40 }] }
+  const segs = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  assert.equal(segs.length, 1)
+  assert.ok(segs[0].start > 33.5 && segs[0].start < 35, `starts at the toss, not the bouncing (${segs[0].start})`)
+  assert.ok(segs[0].end > 43 && segs[0].end < 45.5, `ends after the last shot lands (${segs[0].end})`)
+})
+
+test('edges: an overhead in the middle of an exchange is a smash, not a new start', () => {
+  const a = fakeAnalysis([])
+  const sw: { t: number; side: 'near' | 'far'; overhead: boolean; speed: number }[] = []
+  for (let i = 0; i < 10; i++) sw.push({ t: 20 + i * 1.5, side: i % 2 ? 'far' : 'near', overhead: i === 7, speed: 5 })
+  a.poseEvents = { swings: sw, pickups: [], coverage: 1 }
+  a.audio = { hop: 0.01, onset: [], hits: [{ t: 30.5, s: 40 }] }
+  const segs = segmentRallies(a, DEFAULT_SEGMENT_PARAMS)
+  assert.equal(segs.length, 1)
+  assert.ok(segs[0].start < 20, `rally kept from its first stroke (${segs[0].start})`)
+})
+
+import { concatPath, hardwareArgs } from './export.ts'
+
+test('export: Windows paths are safe in the concat list; encoder flags per GPU family', () => {
+  assert.equal(concatPath('C:\\Users\\me\\.out.mp4.parts\\part0001.mp4'), 'C:/Users/me/.out.mp4.parts/part0001.mp4')
+  assert.equal(concatPath("/tmp/it's.mp4"), "/tmp/it'\\''s.mp4")
+  const nv = hardwareArgs('hevc_nvenc', 'hevc', 8000, true)
+  assert.ok(nv.includes('p010le') && nv.includes('p5'))
+  const amf = hardwareArgs('hevc_amf', 'hevc', 8000, true)
+  assert.ok(!amf.includes('p010le'), 'AMF stays 8-bit')
+  const qsv = hardwareArgs('h264_qsv', 'h264', 8000, false)
+  assert.deepEqual(qsv.slice(0, 2), ['-c:v', 'h264_qsv'])
+  assert.ok(qsv.includes('nv12'))
+})

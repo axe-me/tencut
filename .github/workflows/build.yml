@@ -1,0 +1,90 @@
+# Production builds for macOS (Apple Silicon DMG) and Windows (x64 NSIS installer).
+# - Every push to main / pull request: typecheck, unit tests, build both installers, upload them as artifacts.
+# - Tags like v0.2.0: additionally publish both installers on a GitHub Release.
+# Each platform builds on its own runner because ffmpeg-static downloads the ffmpeg binary for the OS that
+# runs `npm ci`.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (arm64)
+            os: macos-latest
+            target: mac
+            artifact: dist/*.dmg
+          - name: Windows (x64)
+            os: windows-latest
+            target: win
+            artifact: dist/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check bundled ffmpeg / ffprobe
+        shell: bash
+        run: |
+          FFMPEG=$(node -p "require('ffmpeg-static')")
+          FFPROBE=$(node -p "require('ffprobe-static').path")
+          "$FFMPEG" -hide_banner -version | head -1
+          "$FFPROBE" -hide_banner -version | head -1
+          "$FFMPEG" -hide_banner -encoders | grep -E "264|265|hevc" | head -20
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build installer
+        run: npm run dist:${{ matrix.target }}
+        env:
+          # No Windows code-signing certificate configured; don't go looking for one.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.target == 'win' && 'false' || 'true' }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: TenCut-${{ matrix.target }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+          generate_release_notes: true

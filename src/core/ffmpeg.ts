@@ -121,3 +121,39 @@ export async function availableEncoders(): Promise<Set<string>> {
   }
   return (encoderCache = set)
 }
+
+const HW_CANDIDATES: Record<string, ('videotoolbox' | 'nvenc' | 'qsv' | 'amf')[]> = {
+  darwin: ['videotoolbox'],
+  // NVIDIA, Intel Quick Sync, AMD – whichever GPU the machine actually has.
+  win32: ['nvenc', 'qsv', 'amf'],
+  linux: ['nvenc', 'qsv'],
+}
+
+const hwProbeCache = new Map<string, Promise<boolean>>()
+
+/** ffmpeg lists e.g. h264_nvenc even without an NVIDIA GPU; the only reliable check is a tiny test encode. */
+function encoderWorks(name: string): Promise<boolean> {
+  let p = hwProbeCache.get(name)
+  if (!p) {
+    p = new Promise<boolean>((resolve) => {
+      execFile(
+        ffmpegPath(),
+        ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=640x360:r=30', '-frames:v', '10', '-c:v', name, '-f', 'null', '-'],
+        { timeout: 15000 },
+        (err) => resolve(!err),
+      )
+    })
+    hwProbeCache.set(name, p)
+  }
+  return p
+}
+
+/** First working hardware encoder for the codec on this machine, e.g. 'h264_videotoolbox' or 'hevc_nvenc'. */
+export async function hardwareEncoder(codec: 'h264' | 'hevc'): Promise<string | null> {
+  const listed = await availableEncoders()
+  for (const kind of HW_CANDIDATES[process.platform] ?? []) {
+    const name = `${codec}_${kind}`
+    if (listed.has(name) && (await encoderWorks(name))) return name
+  }
+  return null
+}

@@ -172,29 +172,46 @@ export function segmentRallies(a: AnalysisResult, p: SegmentParams, ev = compute
     ranges.push({ s: a0 / GRID_HZ, e: a1 / GRID_HZ, score, serveOnly: false })
   }
 
+  const serves = detectServes(a)
+  const hasPose = !!a.poseEvents && a.poseEvents.coverage > 0.2
+
   // Serves – including faults that never start a rally – are kept as their own short clips.
-  for (const sv of detectServes(a)) {
+  for (const sv of serves) {
     if (ranges.some((r) => sv.hit >= r.s - 0.5 && sv.hit <= r.e + 0.5)) continue
     ranges.push({ s: sv.toss - 1, e: sv.hit + SERVE_FLIGHT, score: 0.6, serveOnly: true })
   }
 
-  // Loud racket hits right at a clip's edges mean the ball tracker lost the ball (blurred serve or smash, final
-  // shot out of view); stretch the clip to cover them. Hits must chain within a rally-like rhythm.
-  const loud = (a.audio?.hits ?? []).filter((h) => h.s >= EDGE_HIT_MIN)
-  for (const r of ranges) {
-    const e0 = r.e
-    for (let changed = true; changed && r.e - e0 < 6; ) {
-      changed = false
-      for (const h of loud) {
-        if (h.t > r.e - 0.3 && h.t <= r.e + 2.5 && h.t + 1 > r.e) {
-          r.e = h.t + 1
-          changed = true
+  let snapped: Range[]
+  if (hasPose) {
+    // Snap each candidate to its actual shots: start just before the serve (or first stroke of the exchange),
+    // end once the last shot has landed. Walking, ball bouncing and ball collection around the point are cut.
+    const events = shotEvents(a, serves)
+    snapped = []
+    for (const r of ranges) {
+      for (const c of snapToShots(r, events)) snapped.push({ ...c, score: r.score, serveOnly: c.serveOnly && r.serveOnly })
+    }
+  } else {
+    // Without player poses, loud racket hits at a clip's edges are the best hint that the tracker lost the
+    // ball (blurred serve or smash, final shot out of view); stretch the clip to cover them.
+    snapped = ranges.map((r) => ({ ...r }))
+    const loud = (a.audio?.hits ?? []).filter((h) => h.s >= EDGE_HIT_MIN)
+    for (const r of snapped) {
+      const e0 = r.e
+      for (let changed = true; changed && r.e - e0 < 6; ) {
+        changed = false
+        for (const h of loud) {
+          if (h.t > r.e - 0.3 && h.t <= r.e + 2.5 && h.t + 1 > r.e) {
+            r.e = h.t + 1
+            changed = true
+          }
         }
       }
+      const before = loud.filter((h) => h.s >= SERVE_HIT_MIN && h.t < r.s && h.t >= r.s - 2.5)
+      if (before.length) r.s = Math.min(r.s, before[0].t - 1.2)
     }
-    const before = loud.filter((h) => h.s >= SERVE_HIT_MIN && h.t < r.s && h.t >= r.s - 2.5)
-    if (before.length) r.s = Math.min(r.s, before[0].t - 1.2)
   }
+  ranges.length = 0
+  ranges.push(...snapped)
 
   const out: Segment[] = []
   const dur = a.source.durationSec
@@ -209,13 +226,100 @@ export function segmentRallies(a: AnalysisResult, p: SegmentParams, ev = compute
   const final: Segment[] = []
   for (const sgm of out) {
     const last = final[final.length - 1]
-    if (last && sgm.start <= last.end) {
+    if (last && sgm.start <= last.end + JOIN_GAP) {
       last.end = Math.max(last.end, sgm.end)
       last.score = Math.max(last.score, sgm.score)
       if (sgm.kind === 'rally') last.kind = 'rally'
     } else final.push(sgm)
   }
   return final
+}
+
+/** Max time between consecutive detected shots of one rally (a high lob, or a stroke the detectors missed). */
+const MAX_SHOT_GAP = 4
+/** Clips closer than this are joined (a cut that short is just a jump in the picture). */
+const JOIN_GAP = 1
+/** Lead-in before the first shot: a serve includes the toss; a groundstroke the backswing. */
+const LEAD_SERVE = 1.2
+const LEAD_STROKE = 0.8
+/** After the last shot: the ball's flight to the bounce / net / fence. */
+const TAIL_SHOT = 1.2
+
+interface ShotEvent {
+  t: number
+  kind: 'swing' | 'flight' | 'serve'
+  side?: 'near' | 'far'
+}
+
+/** Everything that marks "a shot happened here": player swings, ball flights, serves. */
+function shotEvents(a: AnalysisResult, serves: ServeEvent[]): ShotEvent[] {
+  const fps = a.video.fps
+  const ev: ShotEvent[] = []
+  for (const s of a.poseEvents?.swings ?? []) ev.push({ t: s.t, kind: 'swing', side: s.side })
+  for (const t of a.tracks) if (trackWeight(t, a.video.refWidth, fps) >= 0.3) ev.push({ t: t.start / fps, kind: 'flight' })
+  for (const s of serves) ev.push({ t: s.hit, kind: 'serve' })
+  return ev.sort((x, y) => x.t - y.t)
+}
+
+/**
+ * Refine a candidate range to the point(s) inside it. Shots closer than MAX_SHOT_GAP form a chain; a chain is
+ * a point if it has a serve or a real exchange (strokes alternating between the two ends). The point starts at
+ * its serve – anything before it in the chain is the server bouncing the ball – or else at the first stroke of
+ * the exchange; it ends after the last stroke of the exchange (plus that ball's flight).
+ */
+function snapToShots(r: { s: number; e: number }, events: ShotEvent[]): { s: number; e: number; serveOnly: boolean }[] {
+  const ev = events.filter((x) => x.t >= r.s - 1 && x.t <= r.e + 1)
+  const chains: ShotEvent[][] = []
+  for (const x of ev) {
+    const c = chains[chains.length - 1]
+    if (c && x.t - c[c.length - 1].t <= MAX_SHOT_GAP) c.push(x)
+    else chains.push([x])
+  }
+  const out: { s: number; e: number; serveOnly: boolean }[] = []
+  for (const c of chains) {
+    const swings = c.filter((x) => x.kind === 'swing')
+    // Exchanges: consecutive swings from opposite ends, close enough for the ball to have travelled between.
+    let firstEx = -1
+    let lastEx = -1
+    for (let i = 0; i + 1 < swings.length; i++) {
+      if (swings[i].side !== swings[i + 1].side && swings[i + 1].t - swings[i].t <= MAX_SHOT_GAP) {
+        if (firstEx < 0) firstEx = i
+        lastEx = i + 1
+      }
+    }
+    // A serve starts a point, so it can't come after an exchange has begun – an overhead there is a smash.
+    const exStart = firstEx >= 0 ? swings[firstEx].t : Infinity
+    const serve = c.find((x) => x.kind === 'serve' && x.t <= exStart + 0.5)
+    const flights = c.filter((x) => x.kind === 'flight').length
+    if (!serve && firstEx < 0 && flights < 3) continue // walking about, ball bouncing, someone tapping a ball
+    let start: number
+    let lead: number
+    if (serve) {
+      start = serve.t
+      lead = LEAD_SERVE
+    } else if (firstEx >= 0) {
+      // A flight just before the first stroke belongs to the shot that started the exchange (e.g. untracked serve).
+      const t0 = swings[firstEx].t
+      const pre = c.filter((x) => x.kind === 'flight' && x.t < t0 && x.t >= t0 - 2)
+      start = pre.length ? pre[0].t : t0
+      lead = LEAD_STROKE
+    } else {
+      start = c[0].t
+      lead = LEAD_STROKE
+    }
+    let end: number
+    if (lastEx >= 0 && swings[lastEx].t > start) {
+      end = swings[lastEx].t
+      // The last stroke's ball flight (and an immediate bounce/rebound) still belongs to the point.
+      for (const x of c) if (x.kind === 'flight' && x.t > end && x.t <= end + 2) end = x.t
+    } else {
+      const after = c.filter((x) => x.t >= start)
+      end = after.length ? after[after.length - 1].t : start
+    }
+    const serveOnly = !!serve && end - serve.t < 0.5
+    out.push({ s: start - lead, e: end + (serveOnly ? SERVE_FLIGHT : TAIL_SHOT), serveOnly })
+  }
+  return out
 }
 
 /** Loud hits at a clip's edge extend it (racket impacts are well above this; footsteps/voices below). */

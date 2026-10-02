@@ -143,8 +143,9 @@ export interface SegmentParams {
 
 export const DEFAULT_SEGMENT_PARAMS: SegmentParams = {
   sensitivity: 0.5,
-  padBefore: 1.5,
-  padAfter: 1.5,
+  // Extra time on top of the built-in lead-in (serve toss / backswing) and the last ball's flight.
+  padBefore: 0.5,
+  padAfter: 1,
   mergeGap: 2.5,
   minDuration: 3,
 }

@@ -217,9 +217,8 @@ label.check {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 14px 0 84px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line);
-  -webkit-app-region: drag;
   background: #12151a;
 }
 .titlebar button {
@@ -743,4 +742,10 @@ button.icon.tiny {
   font-size: 12px;
   background: rgba(0, 0, 0, 0.55);
   color: #d5dae3;
+}
+
+/* macOS: the window has no title bar; this header is the drag area and leaves room for the traffic lights. */
+.platform-darwin .titlebar {
+  padding-left: 84px;
+  -webkit-app-region: drag;
 }

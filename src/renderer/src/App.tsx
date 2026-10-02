@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisResult, SourceInfo } from '../../core/types'
 import { combineAnalyses, makeTimeline, naturalSort } from '../../core/timeline'
-import { newProject, type ProjectState } from './project'
+import { migrateProject, newProject, type ProjectState } from './project'
 import { Home } from './components/Home'
 import { Setup } from './components/Setup'
 import { Analyzing } from './components/Analyzing'
@@ -33,7 +33,7 @@ export function App() {
   const load = useCallback(async (paths: string[]): Promise<{ infos: SourceInfo[]; project: ProjectState; saved: boolean }> => {
     const infos = await Promise.all(paths.map((p) => window.tencut.probe(p)))
     const saved = (await window.tencut.loadProject(paths)) as ProjectState | null
-    const p = saved?.version === 1 ? { ...saved, sourcePaths: paths } : newProject(infos)
+    const p = saved?.version === 1 ? migrateProject({ ...saved, sourcePaths: paths }) : newProject(infos)
     return { infos, project: p, saved: !!saved }
   }, [])
 

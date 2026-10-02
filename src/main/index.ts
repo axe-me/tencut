@@ -32,6 +32,8 @@ function createWindow(): void {
     title: 'TenCut',
     icon: !app.isPackaged && existsSync(devIcon) ? devIcon : undefined,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Windows/Linux keep the native frame; the menu bar shows with Alt.
+    autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: join(here, '../preload/index.cjs'),
       sandbox: true,

@@ -8,7 +8,7 @@
  */
 import { mkdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, basename, join } from 'node:path'
-import { availableEncoders, hwDecodeArgs, runFfmpeg, type FfmpegRun } from './ffmpeg.ts'
+import { availableEncoders, hardwareEncoder, hwDecodeArgs, runFfmpeg, type FfmpegRun } from './ffmpeg.ts'
 import type { ExportOptions, Progress, SourceInfo } from './types.ts'
 import { targetSize } from './resolutions.ts'
 export { allowedResolutions, targetSize } from './resolutions.ts'
@@ -41,33 +41,43 @@ export function estimateSizeBytes(clips: Clip[], o: ExportOptions): number {
 
 async function encoderArgs(o: ExportOptions, src: SourceInfo): Promise<string[]> {
   if (o.codec === 'copy') return ['-c', 'copy']
-  const enc = await availableEncoders()
   const { w, h } = targetSize(src, o.resolution)
   const kbps = videoBitrate(w, h, src.fps, o.codec, o.quality)
   const tenBit = /10|12/.test(src.pixFmt)
-  const args: string[] = []
-  if (o.codec === 'hevc') {
-    if (o.hardware && enc.has('hevc_videotoolbox')) {
-      args.push('-c:v', 'hevc_videotoolbox', '-b:v', `${kbps}k`, '-maxrate', `${Math.round(kbps * 1.5)}k`, '-bufsize', `${kbps * 2}k`)
-      if (tenBit) args.push('-pix_fmt', 'p010le', '-profile:v', 'main10')
-      else args.push('-pix_fmt', 'yuv420p')
-    } else if (enc.has('libx265')) {
-      args.push('-c:v', 'libx265', '-preset', 'fast', '-b:v', `${kbps}k`, '-pix_fmt', tenBit ? 'yuv420p10le' : 'yuv420p')
-    } else throw new Error('No HEVC encoder available')
-    args.push('-tag:v', 'hvc1')
-  } else {
-    if (o.hardware && enc.has('h264_videotoolbox')) {
-      args.push('-c:v', 'h264_videotoolbox', '-b:v', `${kbps}k`, '-maxrate', `${Math.round(kbps * 1.5)}k`, '-bufsize', `${kbps * 2}k`, '-profile:v', 'high')
-    } else if (enc.has('libx264')) {
-      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(Math.round(28 - o.quality / 10)))
-    } else throw new Error('No H.264 encoder available')
-    args.push('-pix_fmt', 'yuv420p')
-  }
+  const hw = o.hardware ? await hardwareEncoder(o.codec) : null
+  const args = hw ? hardwareArgs(hw, o.codec, kbps, tenBit) : await softwareArgs(o, tenBit)
+  if (o.codec === 'hevc') args.push('-tag:v', 'hvc1')
   // Fixed GOP keeps joins clean; constant frame rate output.
   const fps = src.fps > 0 ? src.fps : 30
   args.push('-g', String(Math.round(fps * 2)), '-fps_mode', 'cfr', '-r', fpsString(fps))
   args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2')
   return args
+}
+
+/** Bitrate-targeted settings for each hardware encoder family (Apple, NVIDIA, Intel, AMD). */
+export function hardwareArgs(name: string, codec: 'h264' | 'hevc', kbps: number, tenBit: boolean): string[] {
+  const rate = ['-b:v', `${kbps}k`, '-maxrate', `${Math.round(kbps * 1.5)}k`, '-bufsize', `${kbps * 2}k`]
+  const args = ['-c:v', name]
+  if (name.endsWith('_nvenc')) args.push('-preset', 'p5', '-rc', 'vbr')
+  else if (name.endsWith('_qsv')) args.push('-preset', 'medium')
+  else if (name.endsWith('_amf')) args.push('-quality', 'balanced', '-rc', 'vbr_peak')
+  args.push(...rate)
+  // 10-bit HEVC where the encoder reliably supports it; AMF's support varies by GPU, so it stays 8-bit.
+  if (codec === 'hevc' && tenBit && !name.endsWith('_amf')) args.push('-pix_fmt', 'p010le', '-profile:v', 'main10')
+  else args.push('-pix_fmt', name.endsWith('_qsv') ? 'nv12' : 'yuv420p')
+  if (codec === 'h264') args.push('-profile:v', 'high')
+  return args
+}
+
+async function softwareArgs(o: ExportOptions, tenBit: boolean): Promise<string[]> {
+  const enc = await availableEncoders()
+  const crf = Math.round(28 - o.quality / 10)
+  if (o.codec === 'hevc') {
+    if (!enc.has('libx265')) throw new Error('No HEVC encoder available')
+    return ['-c:v', 'libx265', '-preset', 'fast', '-crf', String(crf + 2), '-pix_fmt', tenBit ? 'yuv420p10le' : 'yuv420p']
+  }
+  if (!enc.has('libx264')) throw new Error('No H.264 encoder available')
+  return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p']
 }
 
 function fpsString(fps: number): string {
@@ -168,7 +178,8 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
 
       onProgress?.({ phase: 'join', fraction: 0.98, message: 'Joining clips' })
       const list = join(partsDir, 'list.txt')
-      writeFileSync(list, parts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
+      // The concat list treats backslashes as escapes, so Windows paths are written with forward slashes.
+      writeFileSync(list, parts.map((p) => `file '${concatPath(p)}'`).join('\n'))
       const joinArgs = ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy']
       if (o.container !== 'mkv') joinArgs.push('-movflags', '+faststart')
       if (o.codec === 'hevc' && o.container !== 'mkv') joinArgs.push('-tag:v', 'hvc1')
@@ -192,6 +203,10 @@ export function exportClips(clips: Clip[], o: ExportOptions, onProgress?: (p: Pr
     }
   })()
   return { done, cancel }
+}
+
+export function concatPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/'/g, "'\\''")
 }
 
 function fmt(s: number): string {

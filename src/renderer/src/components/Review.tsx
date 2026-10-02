@@ -354,9 +354,9 @@ export function Review({ timeline, analysis, project, onChange, onRecalibrate }:
             <span className="dim small">loose</span>
           </div>
           <div className="field inline">
-            <label>Lead-in</label>
+            <label title="Extra time before the serve / first stroke (the toss is always included)">Extra before</label>
             <NumberInput value={project.params.padBefore} min={0} max={10} step={0.5} onChange={(v) => setParams({ padBefore: v })} suffix="s" />
-            <label>Tail</label>
+            <label title="Extra time after the last shot has landed">Extra after</label>
             <NumberInput value={project.params.padAfter} min={0} max={10} step={0.5} onChange={(v) => setParams({ padAfter: v })} suffix="s" />
             <label title="Join rallies separated by less than this">Join gaps &lt;</label>
             <NumberInput value={project.params.mergeGap} min={0} max={15} step={0.5} onChange={(v) => setParams({ mergeGap: v })} suffix="s" />

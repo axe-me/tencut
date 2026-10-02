@@ -4,6 +4,12 @@ Offline desktop app (Electron) that takes a long tennis recording, for example 1
 
 Everything runs locally: ffmpeg and ffprobe are bundled, there are no network calls and no cloud models.
 
+**Platforms:**
+- macOS on Apple Silicon (DMG). VideoToolbox handles decoding and encoding.
+- Windows 10/11 x64 (installer). Decoding uses Direct3D, and encoding uses NVIDIA NVENC, Intel Quick Sync or AMD AMF, whichever the GPU has, falling back to x264/x265 in software.
+
+**Downloads:** CI builds every push. Installers are on the [Actions](https://github.com/axe-me/tencut/actions) page, and on [Releases](https://github.com/axe-me/tencut/releases) for tagged versions.
+
 ## Using it
 
 1. **Open** a recording. Drag and drop works too. If the camera split the match into several files, select them all.
@@ -49,8 +55,30 @@ node node_modules/electron/install.js   # only if the Electron binary didn't dow
 npm run dev                             # app with hot reload
 npm test                                # core unit tests (node:test)
 npm run typecheck
-npm run build && npx electron-builder --mac --dir   # packaged app in dist/mac-arm64
+npm run dist:mac                        # dist/TenCut-<version>-arm64.dmg
+npm run dist:win                        # dist/TenCut-Setup-<version>-x64.exe (on Windows)
 ```
+
+### Continuous integration
+
+`.github/workflows/build.yml` runs on every push and pull request:
+- typecheck and unit tests;
+- the macOS DMG on a macOS runner and the Windows installer on a Windows runner;
+- both installers uploaded as build artifacts.
+
+Each platform builds on its own OS because `ffmpeg-static` downloads the ffmpeg binary for the machine running `npm ci`.
+
+To publish a release, push a version tag (bump `version` in package.json first):
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Both installers are unsigned:
+- macOS uses an ad-hoc signature; users right-click → Open the first time.
+- Windows SmartScreen shows "unknown publisher"; users choose More info → Run anyway.
+- To sign properly, add an Apple Developer ID and notarization, or Windows code-signing certificate secrets (`CSC_LINK` / `CSC_KEY_PASSWORD`).
 
 Headless tools, used while tuning detection on real footage:
 
@@ -102,7 +130,7 @@ Test file: `match.MP4`, a 27m43s DJI recording, 3840×2160 HEVC Main10 at 29.97 
 | Step | Result |
 |---|---|
 | Analysis | 88 s without pose (19–23× real time, about 600 MB RSS); 150–165 s with pose (10–13× real time) |
-| Detection | 54 clips, keeping 20m48s of 27m43s at default sensitivity, with pose. This recording is mostly continuous hitting with short breaks. |
+| Detection | 58 clips, keeping 16m52s of 27m43s at default sensitivity, with pose. This recording is mostly continuous hitting with short breaks. |
 | Export | 1080p H.264, VideoToolbox: about 8× real time (11m46s of rallies in 1m39s) |
 | In-app preview | 4K HEVC 10-bit plays with hardware decode |
 
@@ -136,8 +164,17 @@ On footage like this, a single signal isn't reliable.
 A ball bounced in place before a serve (a near-vertical track with no sideways travel) is down-weighted.
 
 6. **Serves:** a toss (a near-vertical rise) followed within 2 s by a loud racket hit is a serve. A serve that isn't already inside a rally becomes its own short clip, so faults stay in the edit. The served ball itself is often a faint motion-blurred streak that the colour test misses, but the toss is slow and clearly visible.
-7. **Audio-extended edges:** loud hits just after a clip's last tracked flight extend the clip. This catches untracked final shots and serves.
-8. **Players (pose model, on by default):** in each analysis worker, YOLOX-tiny finds people about once a second, and only those whose feet are on the marked court are kept. RTMPose-t then follows each player's skeleton at 5 fps. Both models are Apache-2.0, run through onnxruntime-node and are bundled in `resources/models`. From the keypoints the analysis derives:
+7. **Clip edges snap to shots (with pose):**
+   - Shot events (player swings, ball flights, serves) less than 4 s apart form a chain.
+   - A chain counts as a point if it has a serve or a real near/far exchange.
+   - The clip starts just before the serve, with the toss included; anything earlier in the chain is the server bouncing the ball. Without a serve it starts at the first stroke of the exchange.
+   - It ends once the last shot of the exchange has landed. Walking around, ball bouncing and ball collection at the edges are cut.
+   - An overhead after an exchange has started is a smash, not a serve.
+   - "Extra before" and "Extra after" add padding on top (defaults 0.5 s and 1 s).
+
+   On the test match this removed about 4 minutes of walking at clip edges (20m48s down to 16m52s kept).
+8. **Audio-extended edges (without pose):** loud hits just after a clip's last tracked flight extend the clip. This catches untracked final shots and serves.
+9. **Players (pose model, on by default):** in each analysis worker, YOLOX-tiny finds people about once a second, and only those whose feet are on the marked court are kept. RTMPose-t then follows each player's skeleton at 5 fps. Both models are Apache-2.0, run through onnxruntime-node and are bundled in `resources/models`. From the keypoints the analysis derives:
    - **swings:** wrist speed relative to the shoulders, normalised by torso length so the small far player counts too, plus at least one torso length of arm sweep;
    - **overhead swings:** serves and smashes;
    - **ball pickups:** a short bent-over episode on court.
@@ -197,4 +234,4 @@ onnxruntime-web with WebGPU in a hidden renderer is the fallback. The current pi
 
 **Distribution:**
 - The bundled `ffmpeg-static` and `ffprobe-static` binaries are GPL builds, and ffprobe-static is old (4.4). A commercial release should ship its own LGPL ffmpeg 7 or 8 build, configured with `--enable-videotoolbox` and without x264/x265.
-- The release also needs signing and notarisation, and a Windows build (d3d11va decode, `h264_qsv` / `h264_nvenc` / `h264_amf` encode mapping).
+- The release also needs code signing and notarisation for both platforms.

@@ -7,14 +7,10 @@ directories:
 files:
   - out/**
   - package.json
-  # ffprobe-static ships every platform; keep only what this build needs.
+  # ffprobe-static and onnxruntime-node ship every platform's binaries (~400 MB together); each platform
+  # section below drops the ones it doesn't need. Linux binaries are never needed.
   - '!node_modules/ffprobe-static/bin/linux/**'
-  - '!node_modules/ffprobe-static/bin/win32/**'
-  - '!node_modules/ffprobe-static/bin/darwin/x64/**'
-  # onnxruntime-node ships every platform's binaries (~300 MB); keep only this target's.
   - '!node_modules/onnxruntime-node/bin/napi-v6/linux/**'
-  - '!node_modules/onnxruntime-node/bin/napi-v6/win32/**'
-  - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/**'
 extraResources:
   - from: resources/models
     to: models
@@ -23,24 +19,49 @@ asarUnpack:
   # Executables can't run from inside an asar archive.
   - node_modules/ffmpeg-static/**
   - node_modules/ffprobe-static/bin/**
-  # Native ONNX Runtime addon + its dylib must be real files.
+  # Native ONNX Runtime addon + its libraries must be real files.
   - node_modules/onnxruntime-node/**
   # Analysis runs in a utilityProcess + worker_threads; keep their modules as real files.
   - out/main/**
+
 mac:
   target:
     - target: dmg
       arch: [arm64]
   category: public.app-category.video
   icon: resources/icon.png
-  # Ad-hoc signature (no Apple Developer ID): runs on this Mac / Apple Silicon. Distribution to other Macs
-  # needs a Developer ID identity + notarization (then turn hardenedRuntime back on).
+  files:
+    - '!node_modules/ffprobe-static/bin/win32/**'
+    - '!node_modules/ffprobe-static/bin/darwin/x64/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v6/win32/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/**'
+  # Ad-hoc signature (no Apple Developer ID): runs on Apple Silicon Macs; Gatekeeper asks once
+  # (right-click → Open). Proper distribution needs a Developer ID identity + notarization
+  # (then turn hardenedRuntime back on).
   identity: '-'
   hardenedRuntime: false
 dmg:
   title: TenCut ${version}
   artifactName: TenCut-${version}-${arch}.dmg
+
 win:
-  target: nsis
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.png
+  files:
+    - '!node_modules/ffprobe-static/bin/darwin/**'
+    - '!node_modules/ffprobe-static/bin/win32/ia32/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**'
+  # Unsigned: Windows SmartScreen shows "unknown publisher" (More info → Run anyway) until a
+  # code-signing certificate is configured (CSC_LINK / CSC_KEY_PASSWORD secrets).
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  artifactName: TenCut-Setup-${version}-${arch}.${ext}
+
 linux:
   target: AppImage
