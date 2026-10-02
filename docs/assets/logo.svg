@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="197 228 630 568"><defs>
+    <radialGradient id="lb-felt" cx="38%" cy="32%" r="75%">
+      <stop offset="0" stop-color="#f1fb7a"/>
+      <stop offset="0.45" stop-color="#d4ea2f"/>
+      <stop offset="1" stop-color="#93ad12"/>
+    </radialGradient>
+    <clipPath id="lb-disc"><circle cx="512" cy="512" r="262"/></clipPath>
+    <g id="lb">
+      <circle cx="512" cy="512" r="262" fill="url(#lb-felt)"/>
+      <g clip-path="url(#lb-disc)" fill="none" stroke="#fbfdf2" stroke-width="22.270000000000003" stroke-linecap="round">
+        <circle cx="202.84000000000003" cy="512" r="243.66000000000003"/>
+        <circle cx="821.16" cy="512" r="243.66000000000003"/>
+      </g>
+    </g><clipPath id="lb-s0"><rect x="250" y="248" width="131" height="528"/></clipPath><clipPath id="lb-s1"><rect x="381" y="248" width="131" height="528"/></clipPath><clipPath id="lb-s2"><rect x="512" y="248" width="131" height="528"/></clipPath><clipPath id="lb-s3"><rect x="643" y="248" width="131" height="528"/></clipPath></defs><g transform="translate(-45 -14)"><g clip-path="url(#lb-s0)"><use href="#lb"/></g></g><g transform="translate(-15 8)"><g clip-path="url(#lb-s1)"><use href="#lb"/></g></g><g transform="translate(15 -8)"><g clip-path="url(#lb-s2)"><use href="#lb"/></g></g><g transform="translate(45 14)"><g clip-path="url(#lb-s3)"><use href="#lb"/></g></g></svg>
