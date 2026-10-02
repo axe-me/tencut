@@ -50,7 +50,7 @@ jobs:
         shell: bash
         run: |
           FFMPEG=$(node -p "require('ffmpeg-static')")
-          FFPROBE=$(node -p "require('ffprobe-static').path")
+          FFPROBE=$(ls resources/bin/ffprobe*  | grep -v LICENSE)
           "$FFMPEG" -hide_banner -version | head -1
           "$FFPROBE" -hide_banner -version | head -1
           "$FFMPEG" -hide_banner -encoders | grep -E "264|265|hevc" | head -20

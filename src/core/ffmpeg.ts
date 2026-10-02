@@ -1,6 +1,7 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import type { SourceInfo } from './types.ts'
 
 const require = createRequire(import.meta.url)
@@ -24,12 +25,17 @@ export function ffmpegPath(): string {
   return (ffmpegPathCache = unpacked(p))
 }
 
+/**
+ * ffprobe is downloaded into resources/bin by scripts/fetch-ffprobe.mjs (npm postinstall) and bundled with the
+ * app. The Electron main process points TENCUT_FFPROBE at the bundled copy; CLI tools find it from the project root.
+ */
 export function ffprobePath(): string {
   if (ffprobePathCache) return ffprobePathCache
-  const env = process.env.TENCUT_FFPROBE
-  if (env && existsSync(env)) return (ffprobePathCache = env)
-  const p = (require('ffprobe-static') as { path: string }).path
-  return (ffprobePathCache = unpacked(p))
+  const exe = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
+  for (const p of [process.env.TENCUT_FFPROBE, join(process.cwd(), 'resources', 'bin', exe)]) {
+    if (p && existsSync(p)) return (ffprobePathCache = p)
+  }
+  throw new Error('ffprobe not found – run `npm install` (or `node scripts/fetch-ffprobe.mjs`) to download it')
 }
 
 function parseRate(r: string | undefined): number {

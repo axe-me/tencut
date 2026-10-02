@@ -233,5 +233,5 @@ onnxruntime-web with WebGPU in a hidden renderer is the fallback. The current pi
 **Licensing of models:** the bundled models are Apache-2.0 (OpenMMLab). Ultralytics YOLO (v8/11, including the pose models RallyClip uses) is AGPL-3.0, which was avoided on purpose. See `resources/models/README.md`.
 
 **Distribution:**
-- The bundled `ffmpeg-static` and `ffprobe-static` binaries are GPL builds, and ffprobe-static is old (4.4). A commercial release should ship its own LGPL ffmpeg 7 or 8 build, configured with `--enable-videotoolbox` and without x264/x265.
+- The bundled ffmpeg (`ffmpeg-static`) and ffprobe are GPL builds from the same FFmpeg 6.x release. ffprobe is downloaded into `resources/bin` by `scripts/fetch-ffprobe.mjs` during `npm install`. A commercial release should ship its own LGPL ffmpeg 7 or 8 build, configured with `--enable-videotoolbox` and without x264/x265.
 - The release also needs code signing and notarisation for both platforms.

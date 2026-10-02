@@ -7,18 +7,19 @@ directories:
 files:
   - out/**
   - package.json
-  # ffprobe-static and onnxruntime-node ship every platform's binaries (~400 MB together); each platform
-  # section below drops the ones it doesn't need. Linux binaries are never needed.
-  - '!node_modules/ffprobe-static/bin/linux/**'
+  # onnxruntime-node ships every platform's binaries (~300 MB); each platform section below drops the ones
+  # it doesn't need. Linux binaries are never needed.
   - '!node_modules/onnxruntime-node/bin/napi-v6/linux/**'
 extraResources:
   - from: resources/models
     to: models
     filter: ['*.onnx', 'README.md']
+  # ffprobe for this platform, downloaded by scripts/fetch-ffprobe.mjs (same FFmpeg release as ffmpeg-static).
+  - from: resources/bin
+    to: bin
 asarUnpack:
   # Executables can't run from inside an asar archive.
   - node_modules/ffmpeg-static/**
-  - node_modules/ffprobe-static/bin/**
   # Native ONNX Runtime addon + its libraries must be real files.
   - node_modules/onnxruntime-node/**
   # Analysis runs in a utilityProcess + worker_threads; keep their modules as real files.
@@ -31,8 +32,6 @@ mac:
   category: public.app-category.video
   icon: resources/icon.png
   files:
-    - '!node_modules/ffprobe-static/bin/win32/**'
-    - '!node_modules/ffprobe-static/bin/darwin/x64/**'
     - '!node_modules/onnxruntime-node/bin/napi-v6/win32/**'
     - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/**'
   # Ad-hoc signature (no Apple Developer ID): runs on Apple Silicon Macs; Gatekeeper asks once
@@ -50,8 +49,6 @@ win:
       arch: [x64]
   icon: resources/icon.png
   files:
-    - '!node_modules/ffprobe-static/bin/darwin/**'
-    - '!node_modules/ffprobe-static/bin/win32/ia32/**'
     - '!node_modules/onnxruntime-node/bin/napi-v6/darwin/**'
     - '!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**'
   # Unsigned: Windows SmartScreen shows "unknown publisher" (More info → Run anyway) until a

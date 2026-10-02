@@ -16,6 +16,13 @@ let win: BrowserWindow | null = null
 // Packaged builds get the name from the bundle; set it explicitly so development runs match (About panel,
 // dock, userData folder).
 app.setName('TenCut')
+
+// Bundled ffprobe (see scripts/fetch-ffprobe.mjs): Contents/Resources/bin when packaged, resources/bin in dev.
+{
+  const exe = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
+  const p = app.isPackaged ? join(process.resourcesPath, 'bin', exe) : join(here, '../../resources/bin', exe)
+  if (!process.env.TENCUT_FFPROBE && existsSync(p)) process.env.TENCUT_FFPROBE = p
+}
 const devIcon = join(here, '../../resources/icon.png')
 
 protocol.registerSchemesAsPrivileged([
