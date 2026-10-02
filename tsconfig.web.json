@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "isolatedModules": true
+  },
+  "include": ["src/renderer/src/**/*", "src/core/court.ts", "src/core/segment.ts", "src/core/types.ts", "src/core/resolutions.ts", "src/preload/index.ts"]
+}

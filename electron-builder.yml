@@ -1,0 +1,29 @@
+appId: app.tencut.desktop
+productName: TenCut
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+  # ffprobe-static ships every platform; keep only what this build needs.
+  - '!node_modules/ffprobe-static/bin/linux/**'
+  - '!node_modules/ffprobe-static/bin/win32/**'
+  - '!node_modules/ffprobe-static/bin/darwin/x64/**'
+asarUnpack:
+  # Executables can't run from inside an asar archive.
+  - node_modules/ffmpeg-static/**
+  - node_modules/ffprobe-static/bin/**
+  # Analysis runs in a utilityProcess + worker_threads; keep their modules as real files.
+  - out/main/**
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.video
+  hardenedRuntime: true
+  identity: null
+win:
+  target: nsis
+linux:
+  target: AppImage

@@ -1,0 +1,36 @@
+{
+  "name": "tencut",
+  "productName": "TenCut",
+  "version": "0.1.0",
+  "description": "Offline tennis match editor that keeps the rallies and cuts the dead time",
+  "main": "out/main/index.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "node --test --experimental-strip-types 'src/core/**/*.test.ts'",
+    "analyze": "node --experimental-strip-types scripts/analyze-cli.ts",
+    "dist": "electron-vite build && electron-builder --mac"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "playwright-core": "^1.63.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "5.9",
+    "vite": "^7.3.6"
+  },
+  "dependencies": {
+    "ffmpeg-static": "5.3",
+    "ffprobe-static": "^3.1.0"
+  }
+}

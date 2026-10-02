@@ -1,0 +1,9 @@
+node_modules
+out
+dist
+*.MP4
+*.mp4
+*.mov
+.tencut-cache
+.shots
+.claude/settings.local.json
